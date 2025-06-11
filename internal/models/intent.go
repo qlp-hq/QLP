@@ -5,12 +5,16 @@ import (
 )
 
 type Intent struct {
-	ID          string            `json:"id"`
-	UserInput   string            `json:"user_input"`
-	ParsedTasks []Task            `json:"parsed_tasks"`
-	Metadata    map[string]string `json:"metadata"`
-	CreatedAt   time.Time         `json:"created_at"`
-	Status      IntentStatus      `json:"status"`
+	ID              string            `json:"id"`
+	UserInput       string            `json:"user_input"`
+	Tasks           []Task            `json:"tasks"` // Renamed from ParsedTasks
+	Metadata        map[string]string `json:"metadata"`
+	Status          IntentStatus      `json:"status"`
+	OverallScore    int               `json:"overall_score"`
+	ExecutionTimeMS int               `json:"execution_time_ms"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
 }
 
 type IntentStatus string

@@ -8,6 +8,7 @@ import (
 
 	"QLP/internal/agents"
 	"QLP/internal/dag"
+	"QLP/internal/database"
 	"QLP/internal/events"
 	"QLP/internal/llm"
 	"QLP/internal/models"
@@ -25,6 +26,8 @@ type Orchestrator struct {
 	executionResults map[string]*packaging.AgentExecutionResult
 	quantumDrops     []packaging.QuantumDrop
 	hitlEnabled      bool
+	db               *database.Database
+	intentRepo       *database.IntentRepository
 }
 
 func New() *Orchestrator {
@@ -36,6 +39,15 @@ func New() *Orchestrator {
 	capsulePackager := packaging.NewCapsuleOrchestrator("./output")
 	quantumDropGen := packaging.NewQuantumDropGenerator()
 
+	// Initialize database connection
+	db, err := database.New()
+	if err != nil {
+		log.Printf("⚠️  Database initialization failed: %v", err)
+		log.Printf("📝 Continuing without persistent storage...")
+	}
+	
+	intentRepo := database.NewIntentRepository(db)
+
 	return &Orchestrator{
 		intentParser:     intentParser,
 		eventBus:         eventBus,
@@ -45,6 +57,8 @@ func New() *Orchestrator {
 		executionResults: make(map[string]*packaging.AgentExecutionResult),
 		quantumDrops:     make([]packaging.QuantumDrop, 0),
 		hitlEnabled:      true, // Enable HITL by default
+		db:               db,
+		intentRepo:       intentRepo,
 	}
 }
 
@@ -70,8 +84,8 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to process test intent: %w", err)
 	}
 
-	log.Printf("Processed intent with %d tasks", len(intent.ParsedTasks))
-	for _, task := range intent.ParsedTasks {
+	log.Printf("Processed intent with %d tasks", len(intent.Tasks))
+	for _, task := range intent.Tasks {
 		log.Printf("Task: %s - %s (%s)", task.ID, task.Description, task.Type)
 	}
 
@@ -88,7 +102,7 @@ func (o *Orchestrator) ProcessIntent(ctx context.Context, userInput string) (*mo
 		return nil, fmt.Errorf("failed to parse intent: %w", err)
 	}
 
-	taskGraph, err := o.buildTaskGraph(intent.ParsedTasks)
+	taskGraph, err := o.buildTaskGraph(intent.Tasks)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build task graph: %w", err)
 	}
@@ -122,19 +136,31 @@ func (o *Orchestrator) buildTaskGraph(tasks []models.Task) (*models.TaskGraph, e
 func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText string) error {
 	log.Printf("🔄 Processing intent: %s", intentText)
 	
+	startTime := time.Now()
+	
 	// Step 1: Parse intent
 	intent, err := o.intentParser.ParseIntent(ctx, intentText)
 	if err != nil {
 		return fmt.Errorf("failed to parse intent: %w", err)
 	}
 	
-	log.Printf("📋 Parsed %d tasks from intent", len(intent.ParsedTasks))
-	for _, task := range intent.ParsedTasks {
+	// Step 1.1: Persist intent to database
+	intent.Status = models.IntentStatusProcessing
+	intent.UpdatedAt = time.Now()
+	if err := o.intentRepo.Create(intent); err != nil {
+		log.Printf("⚠️  Failed to save intent to database: %v", err)
+		// Continue execution even if database save fails
+	} else {
+		log.Printf("💾 Intent saved to database: %s", intent.ID)
+	}
+	
+	log.Printf("📋 Parsed %d tasks from intent", len(intent.Tasks))
+	for _, task := range intent.Tasks {
 		log.Printf("   • %s: %s (%s)", task.ID, task.Description, task.Type)
 	}
 
 	// Step 2: Build task graph
-	taskGraph, err := o.buildTaskGraph(intent.ParsedTasks)
+	taskGraph, err := o.buildTaskGraph(intent.Tasks)
 	if err != nil {
 		return fmt.Errorf("failed to build task graph: %w", err)
 	}
@@ -183,7 +209,22 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 		return fmt.Errorf("failed to generate QuantumCapsule: %w", err)
 	}
 
-	// Step 7: Display results
+	// Step 7: Update intent completion in database
+	executionTime := time.Since(startTime)
+	intent.Status = models.IntentStatusCompleted
+	intent.OverallScore = capsule.Metadata.OverallScore
+	intent.ExecutionTimeMS = int(executionTime.Milliseconds())
+	completedAt := time.Now()
+	intent.CompletedAt = &completedAt
+	intent.UpdatedAt = completedAt
+	
+	if err := o.intentRepo.Update(intent); err != nil {
+		log.Printf("⚠️  Failed to update intent completion in database: %v", err)
+	} else {
+		log.Printf("💾 Intent completion saved to database")
+	}
+	
+	// Step 8: Display results
 	log.Printf("🎯 QuantumCapsule generated: %s", capsule.Metadata.CapsuleID)
 	log.Printf("   📊 Overall Score: %d/100", capsule.Metadata.OverallScore)
 	log.Printf("   ✅ Successful Tasks: %d/%d", capsule.Metadata.SuccessfulTasks, capsule.Metadata.TotalTasks)

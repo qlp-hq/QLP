@@ -4,6 +4,8 @@ go 1.24
 
 require (
 	github.com/docker/docker v25.0.0+incompatible
+	github.com/lib/pq v1.10.9
+	github.com/qdrant/go-client v1.7.0
 	github.com/sashabaranov/go-openai v1.17.9
 )
 

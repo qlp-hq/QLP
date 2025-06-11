@@ -35,12 +35,16 @@ func (p *IntentParser) ParseIntent(ctx context.Context, userInput string) (*mode
 	}
 
 	intent := &models.Intent{
-		ID:          generateID(),
-		UserInput:   userInput,
-		ParsedTasks: tasks,
-		Metadata:    p.extractMetadata(userInput),
-		CreatedAt:   time.Now(),
-		Status:      models.IntentStatusPending,
+		ID:              generateID(),
+		UserInput:       userInput,
+		Tasks:           tasks,
+		Metadata:        p.extractMetadata(userInput),
+		Status:          models.IntentStatusPending,
+		OverallScore:    0,
+		ExecutionTimeMS: 0,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
+		CompletedAt:     nil,
 	}
 
 	return intent, nil

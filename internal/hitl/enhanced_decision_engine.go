@@ -2,6 +2,7 @@ package hitl
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
