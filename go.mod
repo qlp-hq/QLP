@@ -6,6 +6,7 @@ require (
 	github.com/docker/docker v25.0.0+incompatible
 	github.com/lib/pq v1.10.9
 	github.com/sashabaranov/go-openai v1.17.9
+	go.uber.org/zap v1.27.0
 )
 
 require (
@@ -29,6 +30,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.36.0 // indirect
 	go.opentelemetry.io/otel/metric v1.36.0 // indirect
 	go.opentelemetry.io/otel/trace v1.36.0 // indirect
+	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
 	golang.org/x/time v0.12.0 // indirect

@@ -2,9 +2,11 @@ package events
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
+
+	"QLP/internal/logger"
+	"go.uber.org/zap"
 )
 
 type Event struct {
@@ -52,7 +54,8 @@ func (eb *EventBus) Publish(event Event) {
 	select {
 	case eb.events <- event:
 	default:
-		log.Printf("Event bus full, dropping event: %s", event.ID)
+		logger.WithComponent("events").Warn("Event bus full, dropping event",
+			zap.String("event_id", event.ID))
 	}
 }
 
@@ -77,7 +80,9 @@ func (eb *EventBus) handleEvent(ctx context.Context, event Event) {
 	for _, handler := range handlers {
 		go func(h Handler) {
 			if err := h(ctx, event); err != nil {
-				log.Printf("Handler error for event %s: %v", event.ID, err)
+				logger.WithComponent("events").Error("Handler error",
+					zap.String("event_id", event.ID),
+					zap.Error(err))
 			}
 		}(handler)
 	}

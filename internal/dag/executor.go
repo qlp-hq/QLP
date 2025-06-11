@@ -3,15 +3,16 @@ package dag
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	"QLP/internal/agents"
 	"QLP/internal/events"
+	"QLP/internal/logger"
 	"QLP/internal/models"
 	"QLP/internal/sandbox"
-	"QLP/internal/validation"
+	"QLP/internal/types"
+	"go.uber.org/zap"
 )
 
 type TaskResult struct {
@@ -20,7 +21,7 @@ type TaskResult struct {
 	Output           string
 	ExecutionTime    time.Duration
 	SandboxResult    *sandbox.SandboxExecutionResult
-	ValidationResult *validation.ValidationResult
+	ValidationResult *types.ValidationResult
 	Error            error
 	StartTime        time.Time
 	EndTime          time.Time
@@ -66,7 +67,8 @@ func NewDAGExecutor(eventBus *events.EventBus, agentFactory *agents.AgentFactory
 }
 
 func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.TaskGraph) error {
-	log.Printf("Starting DAG execution with %d tasks", len(taskGraph.Tasks))
+	logger.WithComponent("dag").Info("Starting DAG execution",
+		zap.Int("task_count", len(taskGraph.Tasks)))
 
 	for _, task := range taskGraph.Tasks {
 		de.mu.Lock()
@@ -98,7 +100,9 @@ func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.T
 				defer func() { <-de.semaphore }()
 				
 				if err := de.executeTaskWithDynamicAgent(ctx, t, completedChan); err != nil {
-					log.Printf("Task %s failed: %v", t.ID, err)
+					logger.WithComponent("dag").Error("Task execution failed",
+						zap.String("task_id", t.ID),
+						zap.Error(err))
 				}
 			}(task)
 		}
@@ -113,7 +117,10 @@ func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.T
 		select {
 		case taskID := <-completedChan:
 			completedCount++
-			log.Printf("Task completed: %s (%d/%d)", taskID, completedCount, len(taskGraph.Tasks))
+			logger.WithComponent("dag").Info("Task completed",
+				zap.String("task_id", taskID),
+				zap.Int("completed_count", completedCount),
+				zap.Int("total_tasks", len(taskGraph.Tasks)))
 
 			nextTasks := de.findNextReadyTasks(taskID, taskGraph)
 			if len(nextTasks) > 0 {
@@ -124,7 +131,7 @@ func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.T
 		}
 	}
 
-	log.Println("All tasks completed successfully")
+	logger.WithComponent("dag").Info("All tasks completed successfully")
 	return nil
 }
 
@@ -152,7 +159,9 @@ func (de *DAGExecutor) executeTaskWithDynamicAgent(ctx context.Context, task mod
 		},
 	})
 
-	log.Printf("Creating dynamic agent for task: %s - %s", task.ID, task.Description)
+	logger.WithComponent("dag").Info("Creating dynamic agent for task",
+		zap.String("task_id", task.ID),
+		zap.String("description", task.Description))
 
 	agent, err := de.agentFactory.CreateAgent(ctx, task, de.projectContext)
 	if err != nil {

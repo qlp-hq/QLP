@@ -2,23 +2,27 @@ package validation
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/types"
+	"go.uber.org/zap"
 )
 
 // DeploymentValidator provides automated deployment testing
 type DeploymentValidator struct {
-	testRunner     *TestRunner
-	loadTester     *LoadTester
-	securityTester *SecurityTester
-	workingDir     string
+	testRunner        *TestRunner
+	loadTester        *LoadTester
+	securityTester    *SecurityTester
+	universalValidator *UniversalValidator
+	workingDir        string
 }
 
 // DeploymentTestResult represents comprehensive deployment test results
@@ -134,12 +138,13 @@ type PenetrationTest struct {
 }
 
 // NewDeploymentValidator creates a new deployment validator
-func NewDeploymentValidator() *DeploymentValidator {
+func NewDeploymentValidator(llmClient llm.Client) *DeploymentValidator {
 	return &DeploymentValidator{
-		testRunner:     NewTestRunner(),
-		loadTester:     NewLoadTester(10, 60*time.Second, 10*time.Second),
-		securityTester: NewSecurityTester(),
-		workingDir:     "/tmp/qlp_validation",
+		testRunner:         NewTestRunner(),
+		loadTester:         NewLoadTester(10, 60*time.Second, 10*time.Second),
+		securityTester:     NewSecurityTester(),
+		universalValidator: NewUniversalValidator(llmClient),
+		workingDir:         "/tmp/qlp_validation",
 	}
 }
 
@@ -215,10 +220,14 @@ func NewPenetrationTester() *PenetrationTester {
 	}
 }
 
-// ValidateDeployment performs comprehensive deployment validation
+// ValidateDeployment performs comprehensive deployment validation with graceful degradation
 func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *types.QuantumCapsule) (*DeploymentTestResult, error) {
 	startTime := time.Now()
-	log.Printf("Starting deployment validation for QuantumCapsule: %s", capsule.ID)
+	logger.WithComponent("validation").Info("Starting deployment validation",
+		zap.String("capsule_id", capsule.ID))
+
+	// Initialize error aggregator for graceful degradation
+	errorAgg := NewErrorAggregator()
 
 	result := &DeploymentTestResult{
 		TestResults:      make([]TestCaseResult, 0),
@@ -228,27 +237,89 @@ func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *
 		ValidatedAt:      startTime,
 	}
 
-	// 1. Extract and prepare the project
+	// 1. Extract and prepare the project - this is critical and cannot be skipped
 	projectPath, err := dv.extractCapsule(capsule)
 	if err != nil {
+		logger.WithComponent("validation").Error("Critical failure: cannot extract capsule",
+			zap.String("capsule_id", capsule.ID),
+			zap.Error(err))
 		result.Issues = append(result.Issues, fmt.Sprintf("Failed to extract capsule: %v", err))
-		return result, err
+		result.ValidationTime = time.Since(startTime)
+		return result, err // Critical failure - cannot continue
 	}
 	defer dv.cleanup(projectPath)
 
-	// 2. Build the project
-	buildResult, err := dv.buildProject(projectPath)
-	result.BuildSuccess = buildResult
+	// 2. Analyze project with LLM intelligence - truly universal
+	capsuleFiles := dv.extractCapsuleFiles(capsule)
+	projectAnalysis, err := dv.universalValidator.AnalyzeProject(ctx, projectPath, capsuleFiles)
 	if err != nil {
-		result.Issues = append(result.Issues, fmt.Sprintf("Build failed: %v", err))
-		result.ValidationTime = time.Since(startTime)
-		return result, nil
+		logger.WithComponent("validation").Warn("LLM project analysis failed, falling back to heuristics",
+			zap.String("capsule_id", capsule.ID),
+			zap.Error(err))
+		errorAgg.Add(err)
+		// Continue with basic validation - don't fail completely
+	}
+
+	// 3. Build the project using LLM-guided universal build - critical for further validation
+	if projectAnalysis != nil {
+		logger.WithComponent("validation").Info("Building project with LLM guidance",
+			zap.String("language", projectAnalysis.Language),
+			zap.String("framework", projectAnalysis.Framework),
+			zap.String("build_tool", projectAnalysis.BuildTool),
+			zap.Float64("confidence", projectAnalysis.Confidence))
+
+		buildResult, err := dv.universalValidator.BuildProject(ctx, projectPath, projectAnalysis)
+		result.BuildSuccess = buildResult != nil && buildResult.Success
+		
+		if err != nil || !result.BuildSuccess {
+			logger.WithComponent("validation").Error("Universal build failed",
+				zap.String("capsule_id", capsule.ID),
+				zap.String("language", projectAnalysis.Language),
+				zap.Error(err))
+			errorAgg.Add(err)
+			if buildResult != nil {
+				for _, issue := range buildResult.Issues {
+					result.Issues = append(result.Issues, issue)
+				}
+				for _, rec := range buildResult.Recommendations {
+					result.Recommendations = append(result.Recommendations, rec)
+				}
+			} else {
+				result.Issues = append(result.Issues, fmt.Sprintf("Build failed: %v", err))
+			}
+			
+			// Check if this is a critical build error that prevents further validation
+			var ve *ValidationError
+			if errors.As(err, &ve) && ve.Code == ErrorCodeCompilationFailed {
+				result.ValidationTime = time.Since(startTime)
+				return result, nil // Graceful degradation - return partial results
+			}
+		} else {
+			logger.WithComponent("validation").Info("Universal build completed successfully",
+				zap.String("language", projectAnalysis.Language),
+				zap.Duration("build_time", buildResult.BuildTime),
+				zap.Int("artifacts", len(buildResult.OutputArtifacts)))
+		}
+	} else {
+		// Fallback to legacy build approach
+		buildResult, err := dv.buildProject(projectPath)
+		result.BuildSuccess = buildResult
+		if err != nil {
+			logger.WithComponent("validation").Error("Legacy build failed",
+				zap.String("capsule_id", capsule.ID),
+				zap.Error(err))
+			errorAgg.Add(err)
+			result.Issues = append(result.Issues, fmt.Sprintf("Build failed: %v", err))
+			result.ValidationTime = time.Since(startTime)
+			return result, nil // Graceful degradation
+		}
 	}
 
 	// 3. Generate and run tests
 	testResults, err := dv.runIntegrationTests(ctx, projectPath)
 	if err != nil {
-		log.Printf("Integration tests failed: %v", err)
+		logger.WithComponent("validation").Warn("Integration tests failed",
+			zap.Error(err))
 		result.Issues = append(result.Issues, fmt.Sprintf("Integration tests failed: %v", err))
 	} else {
 		result.TestResults = testResults
@@ -279,7 +350,8 @@ func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *
 	if result.HealthCheckPass {
 		loadTestResults, err := dv.loadTester.RunLoadTest(ctx, serviceURL)
 		if err != nil {
-			log.Printf("Load testing failed: %v", err)
+			logger.WithComponent("validation").Warn("Load testing failed",
+				zap.Error(err))
 			result.Issues = append(result.Issues, fmt.Sprintf("Load testing failed: %v", err))
 		} else {
 			result.LoadTestResults = loadTestResults
@@ -292,7 +364,8 @@ func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *
 	// 7. Security testing
 	securityResults, err := dv.securityTester.RunSecurityTests(ctx, serviceURL)
 	if err != nil {
-		log.Printf("Security testing failed: %v", err)
+		logger.WithComponent("validation").Warn("Security testing failed",
+			zap.Error(err))
 		result.Issues = append(result.Issues, fmt.Sprintf("Security testing failed: %v", err))
 	} else {
 		result.SecurityScanPass = len(securityResults) == 0
@@ -302,7 +375,8 @@ func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *
 	// 8. Performance monitoring
 	perfMetrics, err := dv.monitorPerformance(serviceURL)
 	if err != nil {
-		log.Printf("Performance monitoring failed: %v", err)
+		logger.WithComponent("validation").Warn("Performance monitoring failed",
+			zap.Error(err))
 	} else {
 		result.MemoryUsage = perfMetrics.MemoryUsage
 		result.CPUUsage = perfMetrics.CPUUsage
@@ -315,8 +389,12 @@ func (dv *DeploymentValidator) ValidateDeployment(ctx context.Context, capsule *
 	result.Recommendations = dv.generateRecommendations(result)
 	result.ValidationTime = time.Since(startTime)
 
-	log.Printf("Deployment validation completed for %s: Build=%v, Health=%v, Performance=%d, Security=%v",
-		capsule.ID, result.BuildSuccess, result.HealthCheckPass, result.PerformanceScore, result.SecurityScanPass)
+	logger.WithComponent("validation").Info("Deployment validation completed",
+		zap.String("capsule_id", capsule.ID),
+		zap.Bool("build_success", result.BuildSuccess),
+		zap.Bool("health_check_pass", result.HealthCheckPass),
+		zap.Int("performance_score", result.PerformanceScore),
+		zap.Bool("security_scan_pass", result.SecurityScanPass))
 
 	return result, nil
 }
@@ -336,12 +414,18 @@ func (dv *DeploymentValidator) extractCapsule(capsule *types.QuantumCapsule) (st
 			
 			// Create directory if needed
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
-				return "", fmt.Errorf("failed to create directory for %s: %w", filePath, err)
+				return "", WrapValidationError(err, ErrorCodeExtractionFailed, "deployment", "create_directory").
+					WithDetail("file_path", filePath).
+					WithDetail("full_path", fullPath).
+					WithUserFriendlyMessage("Failed to create directory structure for project files")
 			}
 
 			// Write file
 			if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
-				return "", fmt.Errorf("failed to write file %s: %w", filePath, err)
+				return "", WrapValidationError(err, ErrorCodeExtractionFailed, "deployment", "write_file").
+					WithDetail("file_path", filePath).
+					WithDetail("content_size", fmt.Sprintf("%d bytes", len(content))).
+					WithUserFriendlyMessage("Failed to extract project file")
 			}
 		}
 	}
@@ -349,22 +433,25 @@ func (dv *DeploymentValidator) extractCapsule(capsule *types.QuantumCapsule) (st
 	return projectPath, nil
 }
 
-// buildProject builds the extracted project
+// buildProject builds the extracted project with retry logic
 func (dv *DeploymentValidator) buildProject(projectPath string) (bool, error) {
-	log.Printf("Building project at: %s", projectPath)
+	logger.WithComponent("validation").Info("Building project",
+		zap.String("project_path", projectPath))
 
 	// Detect project type and build accordingly
 	if dv.hasFile(projectPath, "go.mod") {
-		return dv.buildGoProject(projectPath)
+		return dv.buildGoProjectWithRetry(projectPath)
 	} else if dv.hasFile(projectPath, "package.json") {
-		return dv.buildNodeProject(projectPath)
+		return dv.buildNodeProjectWithRetry(projectPath)
 	} else if dv.hasFile(projectPath, "requirements.txt") || dv.hasFile(projectPath, "pyproject.toml") {
-		return dv.buildPythonProject(projectPath)
+		return dv.buildPythonProjectWithRetry(projectPath)
 	} else if dv.hasFile(projectPath, "Dockerfile") {
-		return dv.buildDockerProject(projectPath)
+		return dv.buildDockerProjectWithRetry(projectPath)
 	}
 
-	return false, fmt.Errorf("unknown project type")
+	return false, NewValidationError(ErrorCodeUnsupportedFormat, "deployment", "build_project", "unknown project type").
+		WithDetail("project_path", projectPath).
+		WithUserFriendlyMessage("Unable to detect project type. Supported types: Go, Node.js, Python, Docker")
 }
 
 // buildGoProject builds a Go project
@@ -373,17 +460,36 @@ func (dv *DeploymentValidator) buildGoProject(projectPath string) (bool, error) 
 	cmd := exec.Command("go", "mod", "download")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("go mod download failed: %w", err)
+		return false, WrapValidationError(err, ErrorCodeDependencyFailed, "deployment", "go_mod_download").
+			WithDetail("project_path", projectPath).
+			WithUserFriendlyMessage("Failed to download Go dependencies")
 	}
 
 	// Build the project
 	cmd = exec.Command("go", "build", "-o", "app", "./...")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("go build failed: %w", err)
+		return false, WrapValidationError(err, ErrorCodeCompilationFailed, "deployment", "go_build").
+			WithDetail("project_path", projectPath).
+			WithUserFriendlyMessage("Go compilation failed. Please check your code for syntax errors")
 	}
 
 	return true, nil
+}
+
+// buildGoProjectWithRetry builds a Go project with retry logic for transient failures
+func (dv *DeploymentValidator) buildGoProjectWithRetry(projectPath string) (bool, error) {
+	config := DefaultRetryConfig()
+	config.MaxAttempts = 2 // Limit build retries
+	
+	var buildSuccess bool
+	err := Retry(context.Background(), config, func(ctx context.Context, attempt int) error {
+		success, buildErr := dv.buildGoProject(projectPath)
+		buildSuccess = success
+		return buildErr
+	}, "deployment", "build_go_project")
+	
+	return buildSuccess, err
 }
 
 // buildNodeProject builds a Node.js project
@@ -392,7 +498,9 @@ func (dv *DeploymentValidator) buildNodeProject(projectPath string) (bool, error
 	cmd := exec.Command("npm", "install")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("npm install failed: %w", err)
+		return false, WrapValidationError(err, ErrorCodeDependencyFailed, "deployment", "npm_install").
+			WithDetail("project_path", projectPath).
+			WithUserFriendlyMessage("Failed to install Node.js dependencies")
 	}
 
 	// Build if build script exists
@@ -400,11 +508,28 @@ func (dv *DeploymentValidator) buildNodeProject(projectPath string) (bool, error
 		cmd = exec.Command("npm", "run", "build")
 		cmd.Dir = projectPath
 		if err := cmd.Run(); err != nil {
-			return false, fmt.Errorf("npm run build failed: %w", err)
+			return false, WrapValidationError(err, ErrorCodeCompilationFailed, "deployment", "npm_build").
+				WithDetail("project_path", projectPath).
+				WithUserFriendlyMessage("Node.js build failed. Please check your build configuration")
 		}
 	}
 
 	return true, nil
+}
+
+// buildNodeProjectWithRetry builds a Node.js project with retry logic
+func (dv *DeploymentValidator) buildNodeProjectWithRetry(projectPath string) (bool, error) {
+	config := DefaultRetryConfig()
+	config.MaxAttempts = 2
+	
+	var buildSuccess bool
+	err := Retry(context.Background(), config, func(ctx context.Context, attempt int) error {
+		success, buildErr := dv.buildNodeProject(projectPath)
+		buildSuccess = success
+		return buildErr
+	}, "deployment", "build_node_project")
+	
+	return buildSuccess, err
 }
 
 // buildPythonProject builds a Python project
@@ -414,11 +539,28 @@ func (dv *DeploymentValidator) buildPythonProject(projectPath string) (bool, err
 		cmd := exec.Command("pip", "install", "-r", "requirements.txt")
 		cmd.Dir = projectPath
 		if err := cmd.Run(); err != nil {
-			return false, fmt.Errorf("pip install failed: %w", err)
+			return false, WrapValidationError(err, ErrorCodeDependencyFailed, "deployment", "pip_install").
+				WithDetail("project_path", projectPath).
+				WithUserFriendlyMessage("Failed to install Python dependencies")
 		}
 	}
 
 	return true, nil
+}
+
+// buildPythonProjectWithRetry builds a Python project with retry logic
+func (dv *DeploymentValidator) buildPythonProjectWithRetry(projectPath string) (bool, error) {
+	config := DefaultRetryConfig()
+	config.MaxAttempts = 2
+	
+	var buildSuccess bool
+	err := Retry(context.Background(), config, func(ctx context.Context, attempt int) error {
+		success, buildErr := dv.buildPythonProject(projectPath)
+		buildSuccess = success
+		return buildErr
+	}, "deployment", "build_python_project")
+	
+	return buildSuccess, err
 }
 
 // buildDockerProject builds a Docker project
@@ -428,15 +570,34 @@ func (dv *DeploymentValidator) buildDockerProject(projectPath string) (bool, err
 	cmd := exec.Command("docker", "build", "-t", imageTag, ".")
 	cmd.Dir = projectPath
 	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("docker build failed: %w", err)
+		return false, WrapValidationError(err, ErrorCodeCompilationFailed, "deployment", "docker_build").
+			WithDetail("project_path", projectPath).
+			WithDetail("image_tag", imageTag).
+			WithUserFriendlyMessage("Docker build failed. Please check your Dockerfile")
 	}
 
 	return true, nil
 }
 
+// buildDockerProjectWithRetry builds a Docker project with retry logic
+func (dv *DeploymentValidator) buildDockerProjectWithRetry(projectPath string) (bool, error) {
+	config := DefaultRetryConfig()
+	config.MaxAttempts = 2
+	
+	var buildSuccess bool
+	err := Retry(context.Background(), config, func(ctx context.Context, attempt int) error {
+		success, buildErr := dv.buildDockerProject(projectPath)
+		buildSuccess = success
+		return buildErr
+	}, "deployment", "build_docker_project")
+	
+	return buildSuccess, err
+}
+
 // runIntegrationTests runs integration tests
 func (dv *DeploymentValidator) runIntegrationTests(ctx context.Context, projectPath string) ([]TestCaseResult, error) {
-	log.Printf("Running integration tests for project at: %s", projectPath)
+	logger.WithComponent("validation").Info("Running integration tests",
+		zap.String("project_path", projectPath))
 
 	// Generate tests based on project structure
 	testCases, err := dv.testRunner.GenerateTestsFromProject(projectPath)
@@ -449,7 +610,9 @@ func (dv *DeploymentValidator) runIntegrationTests(ctx context.Context, projectP
 	for _, testCase := range testCases {
 		result, err := dv.runTestCase(ctx, testCase)
 		if err != nil {
-			log.Printf("Test case %s failed: %v", testCase.Name, err)
+			logger.WithComponent("validation").Warn("Test case failed",
+				zap.String("test_case", testCase.Name),
+				zap.Error(err))
 			result = TestCaseResult{
 				Name:         testCase.Name,
 				Success:      false,
@@ -464,7 +627,8 @@ func (dv *DeploymentValidator) runIntegrationTests(ctx context.Context, projectP
 
 // startService starts the service and returns its URL and shutdown function
 func (dv *DeploymentValidator) startService(projectPath string) (string, func(), error) {
-	log.Printf("Starting service for project at: %s", projectPath)
+	logger.WithComponent("validation").Info("Starting service",
+		zap.String("project_path", projectPath))
 
 	// Detect how to start the service
 	if dv.hasFile(projectPath, "app") {
@@ -712,7 +876,8 @@ func (dv *DeploymentValidator) monitorPerformance(serviceURL string) (*Performan
 
 // Load testing implementation
 func (lt *LoadTester) RunLoadTest(ctx context.Context, serviceURL string) (*LoadTestMetrics, error) {
-	log.Printf("Running load test against: %s", serviceURL)
+	logger.WithComponent("validation").Info("Running load test",
+		zap.String("service_url", serviceURL))
 
 	// Simplified load test implementation
 	return &LoadTestMetrics{
@@ -734,7 +899,8 @@ func (lt *LoadTester) RunLoadTest(ctx context.Context, serviceURL string) (*Load
 
 // Security testing implementation
 func (st *SecurityTester) RunSecurityTests(ctx context.Context, serviceURL string) ([]types.SecurityFinding, error) {
-	log.Printf("Running security tests against: %s", serviceURL)
+	logger.WithComponent("validation").Info("Running security tests",
+		zap.String("service_url", serviceURL))
 
 	findings := make([]types.SecurityFinding, 0)
 
@@ -820,4 +986,43 @@ func getDefaultPenetrationTests() []PenetrationTest {
 			Description: "Test for SQL injection vulnerabilities",
 		},
 	}
+}
+
+// generateBuildFailureRecommendations generates specific recommendations for build failures
+func (dv *DeploymentValidator) generateBuildFailureRecommendations(ve *ValidationError) []string {
+	recommendations := []string{}
+	
+	switch ve.Code {
+	case ErrorCodeCompilationFailed:
+		recommendations = append(recommendations, "Check syntax errors in your source code")
+		recommendations = append(recommendations, "Verify all required dependencies are properly declared")
+		recommendations = append(recommendations, "Ensure your build configuration is correct")
+	case ErrorCodeDependencyFailed:
+		recommendations = append(recommendations, "Check network connectivity for dependency downloads")
+		recommendations = append(recommendations, "Verify dependency versions are compatible")
+		recommendations = append(recommendations, "Consider using a dependency mirror or proxy")
+	default:
+		recommendations = append(recommendations, "Review build logs for specific error details")
+		recommendations = append(recommendations, "Check project structure and build configuration")
+	}
+	
+	// Add context-specific recommendations based on error details
+	if projectPath, exists := ve.Details["project_path"]; exists {
+		recommendations = append(recommendations, fmt.Sprintf("Check project at path: %s", projectPath))
+	}
+	
+	return recommendations
+}
+
+// extractCapsuleFiles extracts files from QuantumCapsule for LLM analysis
+func (dv *DeploymentValidator) extractCapsuleFiles(capsule *types.QuantumCapsule) map[string]string {
+	files := make(map[string]string)
+	
+	for _, drop := range capsule.Drops {
+		for filePath, content := range drop.Files {
+			files[filePath] = content
+		}
+	}
+	
+	return files
 }

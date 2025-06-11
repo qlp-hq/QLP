@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"regexp"
 	"strings"
 	"time"
 
 	"QLP/internal/llm"
+	"QLP/internal/logger"
+	"go.uber.org/zap"
 )
 
 // InfrastructureValidator provides comprehensive validation for infrastructure code
@@ -175,7 +176,8 @@ func NewInfrastructureValidator() *InfrastructureValidator {
 
 // ValidateInfrastructure performs comprehensive infrastructure validation
 func (iv *InfrastructureValidator) ValidateInfrastructure(ctx context.Context, infrastructureCode string, infraType string) (*InfraValidationResult, error) {
-	log.Printf("Starting comprehensive infrastructure validation for type: %s", infraType)
+	logger.WithComponent("validation").Info("Starting infrastructure validation",
+		zap.String("infrastructure_type", infraType))
 	
 	result := &InfraValidationResult{
 		ValidatedAt:      time.Now(),
@@ -234,15 +236,16 @@ func (iv *InfrastructureValidator) ValidateInfrastructure(ctx context.Context, i
 	result.CriticalIssues = iv.aggregateCriticalIssues(result)
 	result.Recommendations = iv.generateRecommendations(result)
 	
-	log.Printf("Infrastructure validation completed. Overall score: %d, Risk: %s", 
-		result.OverallScore, result.DeploymentRisk)
+	logger.WithComponent("validation").Info("Infrastructure validation completed",
+		zap.Int("overall_score", result.OverallScore),
+		zap.String("deployment_risk", string(result.DeploymentRisk)))
 	
 	return result, nil
 }
 
 // validateTerraform performs Terraform-specific validation
 func (iv *InfrastructureValidator) validateTerraform(ctx context.Context, terraformCode string) (*TerraformValidationResult, error) {
-	log.Printf("Validating Terraform configuration...")
+	logger.WithComponent("validation").Info("Validating Terraform configuration")
 	
 	result := &TerraformValidationResult{
 		SecurityIssues:   make([]SecurityIssue, 0),
@@ -256,7 +259,8 @@ func (iv *InfrastructureValidator) validateTerraform(ctx context.Context, terraf
 	// Best practices validation using LLM
 	bestPracticeScore, err := iv.validateTerraformBestPractices(ctx, terraformCode)
 	if err != nil {
-		log.Printf("Best practices validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Best practices validation failed",
+			zap.Error(err))
 		bestPracticeScore = 50 // Default fallback score
 	}
 	result.BestPracticeScore = bestPracticeScore
@@ -277,8 +281,10 @@ func (iv *InfrastructureValidator) validateTerraform(ctx context.Context, terraf
 	// Plan validation (dry-run simulation)
 	result.PlanValid = iv.validateTerraformPlan(terraformCode)
 	
-	log.Printf("Terraform validation completed. Security: %d, Best Practices: %d, Cost: $%.2f", 
-		result.SecurityScore, result.BestPracticeScore, result.EstimatedCost)
+	logger.WithComponent("validation").Info("Terraform validation completed",
+		zap.Int("security_score", result.SecurityScore),
+		zap.Int("best_practice_score", result.BestPracticeScore),
+		zap.Float64("estimated_cost", result.EstimatedCost))
 	
 	return result, nil
 }
@@ -345,7 +351,7 @@ RESPOND WITH JSON:
 	}
 
 	if err := json.Unmarshal([]byte(response), &assessment); err != nil {
-		log.Printf("Failed to parse LLM response, using fallback analysis")
+		logger.WithComponent("validation").Warn("Failed to parse LLM response, using fallback analysis")
 		return iv.fallbackTerraformAnalysis(terraformCode), nil
 	}
 
@@ -354,7 +360,7 @@ RESPOND WITH JSON:
 
 // validateKubernetes performs Kubernetes-specific validation
 func (iv *InfrastructureValidator) validateKubernetes(ctx context.Context, kubernetesManifests string) (*KubernetesValidationResult, error) {
-	log.Printf("Validating Kubernetes manifests...")
+	logger.WithComponent("validation").Info("Validating Kubernetes manifests")
 	
 	result := &KubernetesValidationResult{
 		Issues:          make([]KubernetesIssue, 0),
@@ -370,7 +376,8 @@ func (iv *InfrastructureValidator) validateKubernetes(ctx context.Context, kuber
 	// Production readiness assessment using LLM
 	productionReadiness, err := iv.validateKubernetesProductionReadiness(ctx, kubernetesManifests)
 	if err != nil {
-		log.Printf("Production readiness validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Production readiness validation failed",
+			zap.Error(err))
 		productionReadiness = 50
 	}
 	result.ProductionReadiness = productionReadiness
@@ -394,8 +401,9 @@ func (iv *InfrastructureValidator) validateKubernetes(ctx context.Context, kuber
 	result.Issues = iv.generateKubernetesIssues(kubernetesManifests)
 	result.Recommendations = iv.generateKubernetesRecommendations(kubernetesManifests)
 	
-	log.Printf("Kubernetes validation completed. Production readiness: %d, Security: %d", 
-		result.ProductionReadiness, result.SecurityScore)
+	logger.WithComponent("validation").Info("Kubernetes validation completed",
+		zap.Int("production_readiness", result.ProductionReadiness),
+		zap.Int("security_score", result.SecurityScore))
 	
 	return result, nil
 }
@@ -640,7 +648,7 @@ RESPOND WITH JSON:
 	}
 
 	if err := json.Unmarshal([]byte(response), &assessment); err != nil {
-		log.Printf("Failed to parse LLM response, using fallback analysis")
+		logger.WithComponent("validation").Warn("Failed to parse LLM response, using fallback analysis")
 		return iv.fallbackKubernetesAnalysis(manifests), nil
 	}
 

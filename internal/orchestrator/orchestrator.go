@@ -3,7 +3,6 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"QLP/internal/agents"
@@ -11,12 +10,13 @@ import (
 	"QLP/internal/database"
 	"QLP/internal/events"
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/models"
 	"QLP/internal/packaging"
 	"QLP/internal/parser"
 	"QLP/internal/types"
-	"QLP/internal/validation"
 	"QLP/internal/vector"
+	"go.uber.org/zap"
 )
 
 type Orchestrator struct {
@@ -47,8 +47,9 @@ func New() *Orchestrator {
 	// Initialize database connection
 	db, err := database.New()
 	if err != nil {
-		log.Printf("⚠️  Database initialization failed: %v", err)
-		log.Printf("📝 Continuing without persistent storage...")
+		logger.Logger.Warn("Database initialization failed",
+			zap.Error(err))
+		logger.Logger.Info("Continuing without persistent storage")
 	}
 	
 	intentRepo := database.NewIntentRepository(db)
@@ -71,17 +72,19 @@ func New() *Orchestrator {
 }
 
 func (o *Orchestrator) Start(ctx context.Context) error {
-	log.Println("Orchestrator starting...")
+	logger.WithComponent("orchestrator").Info("Orchestrator starting")
 
 	o.eventBus.Start(ctx)
 
 	o.eventBus.Subscribe(events.EventTaskStarted, func(ctx context.Context, event events.Event) error {
-		log.Printf("Task started: %v", event.Payload["task_id"])
+		logger.WithComponent("orchestrator").Info("Task started",
+			zap.Any("task_id", event.Payload["task_id"]))
 		return nil
 	})
 
 	o.eventBus.Subscribe(events.EventTaskCompleted, func(ctx context.Context, event events.Event) error {
-		log.Printf("Task completed: %v", event.Payload["task_id"])
+		logger.WithComponent("orchestrator").Info("Task completed",
+			zap.Any("task_id", event.Payload["task_id"]))
 		return nil
 	})
 
@@ -92,9 +95,13 @@ func (o *Orchestrator) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to process test intent: %w", err)
 	}
 
-	log.Printf("Processed intent with %d tasks", len(intent.Tasks))
+	logger.WithComponent("orchestrator").Info("Processed intent",
+		zap.Int("task_count", len(intent.Tasks)))
 	for _, task := range intent.Tasks {
-		log.Printf("Task: %s - %s (%s)", task.ID, task.Description, task.Type)
+		logger.WithComponent("orchestrator").Info("Task parsed",
+			zap.String("task_id", task.ID),
+			zap.String("description", task.Description),
+			zap.String("type", string(task.Type)))
 	}
 
 	if err := o.dagExecutor.ExecuteTaskGraph(ctx, o.taskGraph); err != nil {
@@ -142,7 +149,8 @@ func (o *Orchestrator) buildTaskGraph(tasks []models.Task) (*models.TaskGraph, e
 }
 
 func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText string) error {
-	log.Printf("🔄 Processing intent: %s", intentText)
+	logger.WithComponent("orchestrator").Info("Processing intent",
+		zap.String("intent_text", intentText))
 	
 	startTime := time.Now()
 	
@@ -155,33 +163,42 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	// Step 1.1: Check for similar intents first
 	suggestions, err := o.vectorService.GetIntentSuggestions(ctx, intentText)
 	if err != nil {
-		log.Printf("⚠️  Failed to get intent suggestions: %v", err)
+		logger.WithComponent("orchestrator").Warn("Failed to get intent suggestions",
+			zap.Error(err))
 	} else if len(suggestions) > 0 {
-		log.Printf("💡 Found similar intents:")
-		for _, suggestion := range suggestions {
-			log.Printf("   • %s", suggestion)
-		}
+		logger.WithComponent("orchestrator").Info("Found similar intents",
+			zap.Strings("suggestions", suggestions))
 	}
 	
 	// Step 1.2: Persist intent to database
 	intent.Status = models.IntentStatusProcessing
 	intent.UpdatedAt = time.Now()
 	if err := o.intentRepo.Create(intent); err != nil {
-		log.Printf("⚠️  Failed to save intent to database: %v", err)
+		logger.WithComponent("orchestrator").Warn("Failed to save intent to database",
+			zap.Error(err))
 		// Continue execution even if database save fails
 	} else {
-		log.Printf("💾 Intent saved to database: %s", intent.ID)
+		logger.WithComponent("orchestrator").Info("Intent saved to database",
+			zap.String("intent_id", intent.ID))
 	}
 	
 	// Step 1.3: Generate and store intent embedding
 	if err := o.vectorService.StoreIntentEmbedding(ctx, intent.ID, intentText); err != nil {
-		log.Printf("⚠️  Failed to store intent embedding: %v", err)
+		logger.WithComponent("orchestrator").Warn("Failed to store intent embedding",
+			zap.Error(err))
 		// Continue execution even if embedding storage fails
+	} else {
+		logger.WithComponent("orchestrator").Info("Stored embedding for intent",
+			zap.String("intent_id", intent.ID))
 	}
 	
-	log.Printf("📋 Parsed %d tasks from intent", len(intent.Tasks))
+	logger.WithComponent("orchestrator").Info("Parsed tasks from intent",
+		zap.Int("task_count", len(intent.Tasks)))
 	for _, task := range intent.Tasks {
-		log.Printf("   • %s: %s (%s)", task.ID, task.Description, task.Type)
+		logger.WithComponent("orchestrator").Info("Task parsed",
+			zap.String("task_id", task.ID),
+			zap.String("description", task.Description),
+			zap.String("type", string(task.Type)))
 	}
 
 	// Step 2: Build task graph
@@ -192,7 +209,9 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	o.taskGraph = taskGraph
 
 	// Step 3: Execute task graph with real agents
-	log.Printf("🤖 Executing task graph with %d real agents for %d tasks", len(taskGraph.Tasks), len(taskGraph.Tasks))
+	logger.WithComponent("orchestrator").Info("Executing task graph with real agents",
+		zap.Int("agent_count", len(taskGraph.Tasks)),
+		zap.Int("task_count", len(taskGraph.Tasks)))
 	
 	if err := o.dagExecutor.ExecuteTaskGraph(ctx, taskGraph); err != nil {
 		return fmt.Errorf("failed to execute task graph: %w", err)
@@ -202,7 +221,7 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	o.executionResults = o.collectAgentResults(taskGraph.Tasks)
 
 	// Step 4: Generate QuantumDrops
-	log.Printf("💧 Generating QuantumDrops for HITL workflow...")
+	logger.WithComponent("orchestrator").Info("Generating QuantumDrops for HITL workflow")
 	
 	taskResults := o.convertToTaskExecutionResults(taskGraph.Tasks)
 	quantumDrops, err := o.quantumDropGen.GenerateQuantumDrops(*intent, taskResults)
@@ -211,9 +230,14 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	}
 	
 	o.quantumDrops = quantumDrops
-	log.Printf("💧 Generated %d QuantumDrops", len(quantumDrops))
+	logger.WithComponent("orchestrator").Info("Generated QuantumDrops",
+		zap.Int("drop_count", len(quantumDrops)))
 	for _, drop := range quantumDrops {
-		log.Printf("   • %s (%s): %d files, HITL: %v", drop.Name, drop.Type, drop.Metadata.FileCount, drop.Metadata.HITLRequired)
+		logger.WithComponent("orchestrator").Info("QuantumDrop created",
+			zap.String("name", drop.Name),
+			zap.String("type", string(drop.Type)),
+			zap.Int("file_count", drop.Metadata.FileCount),
+			zap.Bool("hitl_required", drop.Metadata.HITLRequired))
 	}
 
 	// Step 5: HITL Decision Points (if enabled)
@@ -227,7 +251,7 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	}
 
 	// Step 6: Generate final QuantumCapsule from approved drops
-	log.Printf("📦 Generating final QuantumCapsule from approved QuantumDrops...")
+	logger.WithComponent("orchestrator").Info("Generating final QuantumCapsule from approved QuantumDrops")
 	
 	capsule, err := o.generateQuantumCapsule(ctx, *intent)
 	if err != nil {
@@ -244,18 +268,21 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 	intent.UpdatedAt = completedAt
 	
 	if err := o.intentRepo.Update(intent); err != nil {
-		log.Printf("⚠️  Failed to update intent completion in database: %v", err)
+		logger.WithComponent("orchestrator").Warn("Failed to update intent completion in database",
+			zap.Error(err))
 	} else {
-		log.Printf("💾 Intent completion saved to database")
+		logger.WithComponent("orchestrator").Info("Intent completion saved to database")
 	}
 	
 	// Step 8: Display results
-	log.Printf("🎯 QuantumCapsule generated: %s", capsule.Metadata.CapsuleID)
-	log.Printf("   📊 Overall Score: %d/100", capsule.Metadata.OverallScore)
-	log.Printf("   ✅ Successful Tasks: %d/%d", capsule.Metadata.SuccessfulTasks, capsule.Metadata.TotalTasks)
-	log.Printf("   🔒 Security Risk: %s", capsule.SecurityReport.OverallRiskLevel)
-	log.Printf("   📈 Quality Score: %d/100", capsule.QualityReport.OverallQualityScore)
-	log.Printf("   ⏱️  Execution Time: %v", capsule.Metadata.Duration)
+	logger.WithComponent("orchestrator").Info("QuantumCapsule generated",
+		zap.String("capsule_id", capsule.Metadata.CapsuleID),
+		zap.Int("overall_score", capsule.Metadata.OverallScore),
+		zap.Int("successful_tasks", capsule.Metadata.SuccessfulTasks),
+		zap.Int("total_tasks", capsule.Metadata.TotalTasks),
+		zap.String("security_risk", string(capsule.SecurityReport.OverallRiskLevel)),
+		zap.Int("quality_score", capsule.QualityReport.OverallQualityScore),
+		zap.Duration("execution_time", capsule.Metadata.Duration))
 
 	return nil
 }
@@ -308,37 +335,17 @@ func (o *Orchestrator) convertToTaskExecutionResults(tasks []models.Task) []pack
 	return results
 }
 
-// convertValidationResult converts validation.ValidationResult to types.ValidationResult
-func (o *Orchestrator) convertValidationResult(valResult *validation.ValidationResult) *types.ValidationResult {
-	if valResult == nil {
-		return nil
-	}
-	
-	securityScore := 0
-	if valResult.SecurityResult != nil {
-		securityScore = valResult.SecurityResult.Score
-	}
-	
-	qualityScore := 0
-	if valResult.QualityResult != nil {
-		qualityScore = valResult.QualityResult.Score
-	}
-	
-	return &types.ValidationResult{
-		OverallScore:   valResult.OverallScore,
-		SecurityScore:  securityScore,
-		QualityScore:   qualityScore,
-		Passed:         valResult.Passed,
-		ValidationTime: valResult.ValidationTime,
-		ValidatedAt:    valResult.Timestamp,
-	}
+// convertValidationResult is now a passthrough since types are aligned
+func (o *Orchestrator) convertValidationResult(valResult *types.ValidationResult) *types.ValidationResult {
+	return valResult
 }
 
 // processHITLDecisions handles the human-in-the-loop decision workflow
 func (o *Orchestrator) processHITLDecisions(ctx context.Context, intent models.Intent) error {
 	_ = ctx    // Context available for future HTTP/gRPC HITL interfaces
 	_ = intent // Intent available for context-aware decisions
-	log.Printf("🤔 Processing HITL decisions for %d QuantumDrops...", len(o.quantumDrops))
+	logger.WithComponent("orchestrator").Info("Processing HITL decisions",
+		zap.Int("quantum_drop_count", len(o.quantumDrops)))
 	
 	for i := range o.quantumDrops {
 		drop := &o.quantumDrops[i]
@@ -346,7 +353,9 @@ func (o *Orchestrator) processHITLDecisions(ctx context.Context, intent models.I
 		if !drop.Metadata.HITLRequired {
 			// Auto-approve drops that don't require HITL
 			drop.Status = packaging.DropStatusApproved
-			log.Printf("   ✅ Auto-approved: %s (%s)", drop.Name, drop.Type)
+			logger.WithComponent("orchestrator").Info("Auto-approved QuantumDrop",
+				zap.String("name", drop.Name),
+				zap.String("type", string(drop.Type)))
 			continue
 		}
 		
@@ -357,12 +366,18 @@ func (o *Orchestrator) processHITLDecisions(ctx context.Context, intent models.I
 		switch decision.Decision {
 		case packaging.HITLActionContinue:
 			drop.Status = packaging.DropStatusApproved
-			log.Printf("   ✅ HITL Approved: %s (%s) - %s", drop.Name, drop.Type, decision.Feedback)
+			logger.WithComponent("orchestrator").Info("HITL Approved",
+				zap.String("name", drop.Name),
+				zap.String("type", string(drop.Type)),
+				zap.String("feedback", decision.Feedback))
 			
 		case packaging.HITLActionRedo:
 			drop.Status = packaging.DropStatusRejected
 			drop.Metadata.ReviewNotes = append(drop.Metadata.ReviewNotes, decision.Feedback)
-			log.Printf("   🔄 HITL Redo: %s (%s) - %s", drop.Name, drop.Type, decision.Feedback)
+			logger.WithComponent("orchestrator").Warn("HITL Redo",
+				zap.String("name", drop.Name),
+				zap.String("type", string(drop.Type)),
+				zap.String("feedback", decision.Feedback))
 			
 		case packaging.HITLActionModify:
 			drop.Status = packaging.DropStatusModified
@@ -371,12 +386,18 @@ func (o *Orchestrator) processHITLDecisions(ctx context.Context, intent models.I
 				drop.Files[filePath] = newContent
 			}
 			drop.Metadata.ReviewNotes = append(drop.Metadata.ReviewNotes, decision.Feedback)
-			log.Printf("   🔧 HITL Modified: %s (%s) - %s", drop.Name, drop.Type, decision.Feedback)
+			logger.WithComponent("orchestrator").Info("HITL Modified",
+				zap.String("name", drop.Name),
+				zap.String("type", string(drop.Type)),
+				zap.String("feedback", decision.Feedback))
 			
 		case packaging.HITLActionReject:
 			drop.Status = packaging.DropStatusRejected
 			drop.Metadata.ReviewNotes = append(drop.Metadata.ReviewNotes, decision.Feedback)
-			log.Printf("   ❌ HITL Rejected: %s (%s) - %s", drop.Name, drop.Type, decision.Feedback)
+			logger.WithComponent("orchestrator").Warn("HITL Rejected",
+				zap.String("name", drop.Name),
+				zap.String("type", string(drop.Type)),
+				zap.String("feedback", decision.Feedback))
 		}
 	}
 	
@@ -420,7 +441,9 @@ func (o *Orchestrator) autoApproveAllDrops() {
 	for i := range o.quantumDrops {
 		o.quantumDrops[i].Status = packaging.DropStatusApproved
 	}
-	log.Printf("✅ Auto-approved all %d QuantumDrops (HITL disabled)", len(o.quantumDrops))
+	logger.WithComponent("orchestrator").Info("Auto-approved all QuantumDrops",
+		zap.Int("quantum_drop_count", len(o.quantumDrops)),
+		zap.Bool("hitl_disabled", true))
 }
 
 // generateQuantumCapsule creates the final capsule from approved QuantumDrops
@@ -433,7 +456,8 @@ func (o *Orchestrator) generateQuantumCapsule(ctx context.Context, intent models
 		}
 	}
 	
-	log.Printf("📦 Merging %d approved QuantumDrops into final capsule", len(approvedDrops))
+	logger.WithComponent("orchestrator").Info("Merging approved QuantumDrops into final capsule",
+		zap.Int("approved_drops", len(approvedDrops)))
 	
 	// Use existing capsule packager to generate the final capsule
 	capsule, err := o.capsulePackager.ProcessIntentExecution(ctx, intent, o.taskGraph.Tasks, o.executionResults)

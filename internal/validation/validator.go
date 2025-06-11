@@ -3,15 +3,17 @@ package validation
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/models"
 	"QLP/internal/sandbox"
+	"QLP/internal/types"
+	"go.uber.org/zap"
 )
 
 type ValidationEngine struct {
@@ -21,18 +23,10 @@ type ValidationEngine struct {
 	qualityAnalyzer  *QualityAnalyzer
 }
 
-type ValidationResult struct {
-	TaskID           string                    `json:"task_id"`
-	OverallScore     int                       `json:"overall_score"`
-	Passed           bool                      `json:"passed"`
-	SyntaxResult     *SyntaxValidationResult   `json:"syntax_result"`
-	SecurityResult   *TaskSecurityValidationResult `json:"security_result"`
-	QualityResult    *QualityValidationResult  `json:"quality_result"`
-	LLMCritiqueResult *LLMCritiqueResult       `json:"llm_critique_result"`
-	ValidationTime   time.Duration             `json:"validation_time"`
-	Timestamp        time.Time                 `json:"timestamp"`
-}
+// ValidationResult moved to internal/types to avoid import cycles
+// Using types.ValidationResult instead
 
+// Local validation types - keeping detailed ones here
 type SyntaxValidationResult struct {
 	Score       int      `json:"score"`
 	Valid       bool     `json:"valid"`
@@ -41,48 +35,12 @@ type SyntaxValidationResult struct {
 	LintResults []string `json:"lint_results"`
 }
 
-type TaskSecurityValidationResult struct {
-	Score            int                `json:"score"`
-	RiskLevel        SecurityRiskLevel  `json:"risk_level"`
-	Vulnerabilities  []TaskSecurityIssue    `json:"vulnerabilities"`
-	ComplianceScore  int                `json:"compliance_score"`
-	SandboxViolations []string          `json:"sandbox_violations"`
-}
-
-type QualityValidationResult struct {
-	Score              int     `json:"score"`
-	Completeness       int     `json:"completeness"`
-	Maintainability    int     `json:"maintainability"`
-	Performance        int     `json:"performance"`
-	BestPractices      int     `json:"best_practices"`
-	Documentation      int     `json:"documentation"`
-	TestCoverage       float64 `json:"test_coverage"`
-}
-
 type LLMCritiqueResult struct {
 	Score        int      `json:"score"`
 	Feedback     string   `json:"feedback"`
 	Suggestions  []string `json:"suggestions"`
 	Improvements []string `json:"improvements"`
 	Confidence   float64  `json:"confidence"`
-}
-
-type SecurityRiskLevel string
-
-const (
-	SecurityRiskNone     SecurityRiskLevel = "none"
-	SecurityRiskLow      SecurityRiskLevel = "low"
-	SecurityRiskMedium   SecurityRiskLevel = "medium"
-	SecurityRiskHigh     SecurityRiskLevel = "high"
-	SecurityRiskCritical SecurityRiskLevel = "critical"
-)
-
-type TaskSecurityIssue struct {
-	Type        string            `json:"type"`
-	Severity    SecurityRiskLevel `json:"severity"`
-	Description string            `json:"description"`
-	Location    string            `json:"location"`
-	Mitigation  string            `json:"mitigation"`
 }
 
 func NewValidationEngine(llmClient llm.Client) *ValidationEngine {
@@ -94,36 +52,33 @@ func NewValidationEngine(llmClient llm.Client) *ValidationEngine {
 	}
 }
 
-func (ve *ValidationEngine) ValidateTaskOutput(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*ValidationResult, error) {
+func (ve *ValidationEngine) ValidateTaskOutput(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*types.ValidationResult, error) {
 	startTime := time.Now()
 	
-	log.Printf("Starting validation for task %s (%s)", task.ID, task.Type)
+	logger.WithComponent("validation").Info("Starting validation",
+		zap.String("task_id", task.ID),
+		zap.String("task_type", string(task.Type)))
 
-	result := &ValidationResult{
-		TaskID:    task.ID,
-		Timestamp: startTime,
+	result := &types.ValidationResult{
+		ValidatedAt: startTime,
 	}
 
 	// Check for fast mode
 	validationLevel := os.Getenv("QLP_VALIDATION_LEVEL")
 	if validationLevel == "fast" {
 		// Fast mode: Skip heavy validations, use simple heuristics
-		result.SyntaxResult = &SyntaxValidationResult{
-			Valid:   true,
-			Score:   75,
-			Issues:  []string{},
-		}
-		result.SecurityResult = &TaskSecurityValidationResult{
+		result.SecurityResult = &types.SecurityResult{
 			Score:       75,
-			RiskLevel:   SecurityRiskLow,
-			Vulnerabilities: []TaskSecurityIssue{},
+			RiskLevel:   types.SecurityRiskLevelLow,
+			Vulnerabilities: []types.SecurityIssue{},
+			Passed:      true,
 		}
-		result.QualityResult = &QualityValidationResult{
+		result.QualityResult = &types.QualityResult{
 			Score: 75,
-			Completeness: 75,
 			Maintainability: 75,
-			Performance: 75,
+			Documentation: 75,
 			BestPractices: 75,
+			Passed: true,
 		}
 		
 		// Skip LLM critique in fast mode
@@ -131,7 +86,11 @@ func (ve *ValidationEngine) ValidateTaskOutput(ctx context.Context, task models.
 		result.Passed = true
 		result.ValidationTime = time.Since(startTime)
 		
-		log.Printf("Validation completed for task %s: Score=%d, Passed=%t", task.ID, result.OverallScore, result.Passed)
+		logger.WithComponent("validation").Info("Fast validation completed",
+			zap.String("task_id", task.ID),
+			zap.Int("overall_score", result.OverallScore),
+			zap.Bool("passed", result.Passed),
+			zap.String("mode", "fast"))
 		return result, nil
 	}
 
@@ -140,7 +99,7 @@ func (ve *ValidationEngine) ValidateTaskOutput(ctx context.Context, task models.
 	if err != nil {
 		return nil, fmt.Errorf("syntax validation failed: %w", err)
 	}
-	result.SyntaxResult = syntaxResult
+	_ = syntaxResult // TODO: add SyntaxResult field to ValidationResult if needed
 
 	// 2. Security Validation
 	securityResult, err := ve.validateSecurity(ctx, task, output, sandboxResult)
@@ -161,14 +120,22 @@ func (ve *ValidationEngine) ValidateTaskOutput(ctx context.Context, task models.
 	if err != nil {
 		return nil, fmt.Errorf("LLM critique failed: %w", err)
 	}
-	result.LLMCritiqueResult = critiqueResult
+	_ = critiqueResult // TODO: add LLMCritiqueResult field to ValidationResult if needed
 
 	// Calculate overall score
 	result.OverallScore = ve.calculateOverallScore(syntaxResult, securityResult, qualityResult, critiqueResult)
+	result.SecurityScore = securityResult.Score
+	result.QualityScore = qualityResult.Score
 	result.Passed = result.OverallScore >= 70 // 70% threshold for passing
 	result.ValidationTime = time.Since(startTime)
 
-	log.Printf("Validation completed for task %s: Score=%d, Passed=%v", task.ID, result.OverallScore, result.Passed)
+	logger.WithComponent("validation").Info("Validation completed",
+		zap.String("task_id", task.ID),
+		zap.Int("overall_score", result.OverallScore),
+		zap.Bool("passed", result.Passed),
+		zap.Int("security_score", result.SecurityScore),
+		zap.Int("quality_score", result.QualityScore),
+		zap.Duration("validation_time", result.ValidationTime))
 
 	return result, nil
 }
@@ -187,11 +154,11 @@ func (ve *ValidationEngine) validateSyntax(ctx context.Context, task models.Task
 	return validator.Validate(ctx, output)
 }
 
-func (ve *ValidationEngine) validateSecurity(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*TaskSecurityValidationResult, error) {
+func (ve *ValidationEngine) validateSecurity(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*types.SecurityResult, error) {
 	return ve.securityScanner.ScanOutput(ctx, task, output, sandboxResult)
 }
 
-func (ve *ValidationEngine) analyzeQuality(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*QualityValidationResult, error) {
+func (ve *ValidationEngine) analyzeQuality(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*types.QualityResult, error) {
 	return ve.qualityAnalyzer.AnalyzeOutput(ctx, task, output, sandboxResult)
 }
 
@@ -272,7 +239,7 @@ func (ve *ValidationEngine) parseCritiqueResponse(response string) (*LLMCritique
 	return result, nil
 }
 
-func (ve *ValidationEngine) calculateOverallScore(syntax *SyntaxValidationResult, security *TaskSecurityValidationResult, quality *QualityValidationResult, critique *LLMCritiqueResult) int {
+func (ve *ValidationEngine) calculateOverallScore(syntax *SyntaxValidationResult, security *types.SecurityResult, quality *types.QualityResult, critique *LLMCritiqueResult) int {
 	// Weighted scoring system
 	weights := map[string]float64{
 		"syntax":    0.25, // 25%

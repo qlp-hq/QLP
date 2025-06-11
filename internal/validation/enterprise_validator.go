@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/types"
+	"go.uber.org/zap"
 )
 
 // EnterpriseValidator provides comprehensive enterprise-grade validation
@@ -274,7 +275,8 @@ func NewOperationalChecker(llmClient llm.Client) *OperationalChecker {
 // ValidateForEnterprise performs comprehensive enterprise validation
 func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsule *types.QuantumCapsule, requirements *EnterpriseRequirements) (*EnterpriseValidationResult, error) {
 	startTime := time.Now()
-	log.Printf("Starting enterprise validation for QuantumCapsule: %s", capsule.ID)
+	logger.WithComponent("validation").Info("Starting enterprise validation",
+		zap.String("capsule_id", capsule.ID))
 
 	result := &EnterpriseValidationResult{
 		ComplianceGaps:     make([]ComplianceGap, 0),
@@ -293,7 +295,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 1. Compliance validation
 	complianceResult, err := ev.validateCompliance(ctx, capsuleContent, requirements.ComplianceFrameworks)
 	if err != nil {
-		log.Printf("Compliance validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Compliance validation failed",
+			zap.Error(err))
 	} else {
 		result.SOC2Compliant = complianceResult.SOC2Compliance >= 80
 		result.GDPRCompliant = complianceResult.GDPRCompliance >= 80
@@ -320,7 +323,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 2. Security audit
 	securityResult, err := ev.performSecurityAudit(ctx, capsuleContent, requirements.SecurityLevel)
 	if err != nil {
-		log.Printf("Security audit failed: %v", err)
+		logger.WithComponent("validation").Warn("Security audit failed",
+			zap.Error(err))
 		result.SecurityScore = 50
 	} else {
 		result.SecurityScore = securityResult.Score
@@ -330,7 +334,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 3. Performance profiling
 	performanceResult, err := ev.profilePerformance(ctx, capsuleContent, requirements.PerformanceTargets)
 	if err != nil {
-		log.Printf("Performance profiling failed: %v", err)
+		logger.WithComponent("validation").Warn("Performance profiling failed",
+			zap.Error(err))
 		result.PerformanceGrade = "C"
 	} else {
 		result.PerformanceGrade = performanceResult.Grade
@@ -340,7 +345,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 4. Scalability assessment
 	scalabilityResult, err := ev.assessScalability(ctx, capsuleContent, requirements.ScalabilityTargets)
 	if err != nil {
-		log.Printf("Scalability assessment failed: %v", err)
+		logger.WithComponent("validation").Warn("Scalability assessment failed",
+			zap.Error(err))
 		result.ScalabilityRating = 60
 	} else {
 		result.ScalabilityRating = scalabilityResult.Rating
@@ -349,7 +355,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 5. Operational readiness
 	operationalResult, err := ev.assessOperationalReadiness(ctx, capsuleContent, requirements.AvailabilityTargets)
 	if err != nil {
-		log.Printf("Operational readiness assessment failed: %v", err)
+		logger.WithComponent("validation").Warn("Operational readiness assessment failed",
+			zap.Error(err))
 		result.OperationalScore = 60
 	} else {
 		result.OperationalScore = operationalResult.Score
@@ -359,7 +366,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 6. Business impact assessment
 	businessImpact, err := ev.assessBusinessImpact(ctx, capsuleContent, requirements)
 	if err != nil {
-		log.Printf("Business impact assessment failed: %v", err)
+		logger.WithComponent("validation").Warn("Business impact assessment failed",
+			zap.Error(err))
 	} else {
 		result.BusinessImpact = businessImpact
 	}
@@ -367,7 +375,8 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	// 7. Risk assessment
 	riskAssessment, err := ev.performRiskAssessment(ctx, result, requirements)
 	if err != nil {
-		log.Printf("Risk assessment failed: %v", err)
+		logger.WithComponent("validation").Warn("Risk assessment failed",
+			zap.Error(err))
 	} else {
 		result.RiskAssessment = riskAssessment
 	}
@@ -383,8 +392,11 @@ func (ev *EnterpriseValidator) ValidateForEnterprise(ctx context.Context, capsul
 	result.Certifications = ev.identifyAvailableCertifications(result)
 	result.ValidationTime = time.Since(startTime)
 
-	log.Printf("Enterprise validation completed for %s: Overall=%d, Grade=%s, Production Ready=%v",
-		capsule.ID, result.OverallScore, result.EnterpriseGrade, result.ProductionReady)
+	logger.WithComponent("validation").Info("Enterprise validation completed",
+		zap.String("capsule_id", capsule.ID),
+		zap.Int("overall_score", result.OverallScore),
+		zap.String("enterprise_grade", string(result.EnterpriseGrade)),
+		zap.Bool("production_ready", result.ProductionReady))
 
 	return result, nil
 }
@@ -476,7 +488,8 @@ RESPOND WITH JSON:
 
 	var complianceResult ComplianceValidationResult
 	if err := json.Unmarshal([]byte(response), &complianceResult); err != nil {
-		log.Printf("Failed to parse compliance validation response: %v", err)
+		logger.WithComponent("validation").Warn("Failed to parse compliance validation response",
+			zap.Error(err))
 		return ev.fallbackComplianceAnalysis(content, frameworks), nil
 	}
 
@@ -566,7 +579,8 @@ RESPOND WITH JSON:
 
 	var securityResult SecurityAuditResult
 	if err := json.Unmarshal([]byte(response), &securityResult); err != nil {
-		log.Printf("Failed to parse security audit response: %v", err)
+		logger.WithComponent("validation").Warn("Failed to parse security audit response",
+			zap.Error(err))
 		return ev.fallbackSecurityAudit(content), nil
 	}
 

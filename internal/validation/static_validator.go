@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/packaging"
 	"QLP/internal/types"
+	"go.uber.org/zap"
 )
 
 // StaticValidator provides comprehensive LLM-based static validation
@@ -91,7 +92,9 @@ func NewComplianceChecker() *ComplianceChecker {
 // ValidateQuantumDrop performs comprehensive static validation of a QuantumDrop
 func (sv *StaticValidator) ValidateQuantumDrop(ctx context.Context, drop *packaging.QuantumDrop) (*StaticValidationResult, error) {
 	startTime := time.Now()
-	log.Printf("Starting comprehensive static validation for QuantumDrop: %s", drop.Name)
+	logger.WithComponent("validation").Info("Starting static validation",
+		zap.String("drop_name", drop.Name),
+		zap.String("drop_type", string(drop.Type)))
 
 	result := &StaticValidationResult{
 		Issues:               make([]ValidationIssue, 0),
@@ -111,7 +114,8 @@ func (sv *StaticValidator) ValidateQuantumDrop(ctx context.Context, drop *packag
 	// 1. Security-focused LLM validation
 	securityScore, securityFindings, err := sv.validateSecurity(ctx, codeContent, drop.Type)
 	if err != nil {
-		log.Printf("Security validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Security validation failed",
+			zap.Error(err))
 		securityScore = 50 // Fallback score
 	}
 	result.SecurityScore = securityScore
@@ -121,7 +125,8 @@ func (sv *StaticValidator) ValidateQuantumDrop(ctx context.Context, drop *packag
 	// 2. Code quality-focused LLM validation
 	qualityScore, qualityFindings, err := sv.validateQuality(ctx, codeContent, drop.Type)
 	if err != nil {
-		log.Printf("Quality validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Quality validation failed",
+			zap.Error(err))
 		qualityScore = 60 // Fallback score
 	}
 	result.QualityScore = qualityScore
@@ -131,7 +136,8 @@ func (sv *StaticValidator) ValidateQuantumDrop(ctx context.Context, drop *packag
 	// 3. Architecture-focused LLM validation
 	architectureScore, architectureFindings, err := sv.validateArchitecture(ctx, codeContent, projectStructure, drop.Type)
 	if err != nil {
-		log.Printf("Architecture validation failed: %v", err)
+		logger.WithComponent("validation").Warn("Architecture validation failed",
+			zap.Error(err))
 		architectureScore = 65 // Fallback score
 	}
 	result.ArchitectureScore = architectureScore
@@ -151,8 +157,12 @@ func (sv *StaticValidator) ValidateQuantumDrop(ctx context.Context, drop *packag
 	result.Recommendations = sv.generateRecommendations(result)
 	result.ValidationTime = time.Since(startTime)
 
-	log.Printf("Static validation completed for %s: Overall=%d, Security=%d, Quality=%d, Architecture=%d",
-		drop.Name, result.OverallScore, result.SecurityScore, result.QualityScore, result.ArchitectureScore)
+	logger.WithComponent("validation").Info("Static validation completed",
+		zap.String("drop_name", drop.Name),
+		zap.Int("overall_score", result.OverallScore),
+		zap.Int("security_score", result.SecurityScore),
+		zap.Int("quality_score", result.QualityScore),
+		zap.Int("architecture_score", result.ArchitectureScore))
 
 	return result, nil
 }
@@ -235,7 +245,8 @@ RESPOND WITH JSON:
 	}
 
 	if err := json.Unmarshal([]byte(response), &securityResult); err != nil {
-		log.Printf("Failed to parse security validation response: %v", err)
+		logger.WithComponent("validation").Warn("Failed to parse security validation response",
+			zap.Error(err))
 		return sv.fallbackSecurityAnalysis(codeContent), []types.SecurityFinding{}, nil
 	}
 
@@ -328,7 +339,8 @@ RESPOND WITH JSON:
 	}
 
 	if err := json.Unmarshal([]byte(response), &qualityResult); err != nil {
-		log.Printf("Failed to parse quality validation response: %v", err)
+		logger.WithComponent("validation").Warn("Failed to parse quality validation response",
+			zap.Error(err))
 		return sv.fallbackQualityAnalysis(codeContent), []QualityFinding{}, nil
 	}
 
@@ -435,7 +447,8 @@ RESPOND WITH JSON:
 	}
 
 	if err := json.Unmarshal([]byte(response), &architectureResult); err != nil {
-		log.Printf("Failed to parse architecture validation response: %v", err)
+		logger.WithComponent("validation").Warn("Failed to parse architecture validation response",
+			zap.Error(err))
 		return sv.fallbackArchitectureAnalysis(codeContent), []ArchitectureFinding{}, nil
 	}
 

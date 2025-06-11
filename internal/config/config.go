@@ -2,7 +2,7 @@ package config
 
 import (
 	"bufio"
-	"log"
+	"fmt"
 	"os"
 	"strings"
 )
@@ -17,7 +17,7 @@ func LoadEnv() {
 	}
 	defer file.Close()
 
-	log.Printf("📝 Loading environment from .env file")
+	fmt.Printf("📝 Loading environment from .env file\n")
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
@@ -44,7 +44,7 @@ func LoadEnv() {
 	}
 	
 	if err := scanner.Err(); err != nil {
-		log.Printf("⚠️  Error reading .env file: %v", err)
+		fmt.Printf("⚠️  Error reading .env file: %v\\n", err)
 	}
 }
 

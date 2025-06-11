@@ -3,14 +3,16 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"QLP/internal/events"
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/models"
 	"QLP/internal/sandbox"
+	"QLP/internal/types"
 	"QLP/internal/validation"
+	"go.uber.org/zap"
 )
 
 type DynamicAgent struct {
@@ -27,7 +29,7 @@ type DynamicAgent struct {
 	StartTime         time.Time
 	Output            string
 	SandboxResult     *sandbox.SandboxExecutionResult
-	ValidationResult  *validation.ValidationResult
+	ValidationResult  *types.ValidationResult
 	Error             error
 }
 
@@ -60,7 +62,9 @@ func NewDynamicAgent(task models.Task, llmClient llm.Client, eventBus *events.Ev
 }
 
 func (da *DynamicAgent) Initialize(ctx context.Context) error {
-	log.Printf("Initializing dynamic agent %s for task %s", da.ID, da.Task.ID)
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Initializing dynamic agent",
+		zap.String("task_id", da.Task.ID),
+		zap.String("task_type", string(da.Task.Type)))
 
 	// Skip meta-prompt generation and use direct execution prompt
 	da.GeneratedPrompt = da.buildDirectExecutionPrompt()
@@ -79,7 +83,7 @@ func (da *DynamicAgent) Initialize(ctx context.Context) error {
 		},
 	})
 
-	log.Printf("Agent %s initialized with specialized prompt", da.ID)
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Agent initialized with specialized prompt")
 	return nil
 }
 
@@ -91,7 +95,9 @@ func (da *DynamicAgent) Execute(ctx context.Context) error {
 	da.Status = AgentStatusExecuting
 	da.StartTime = time.Now()
 
-	log.Printf("Agent %s executing task %s", da.ID, da.Task.ID)
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Agent executing task",
+		zap.String("task_id", da.Task.ID),
+		zap.String("task_description", da.Task.Description))
 
 	da.EventBus.Publish(events.Event{
 		ID:        fmt.Sprintf("agent_%s_started", da.ID),
@@ -127,7 +133,8 @@ func (da *DynamicAgent) Execute(ctx context.Context) error {
 		return fmt.Errorf("agent execution failed: %w", err)
 	}
 
-	log.Printf("Agent %s received LLM output, executing in sandbox", da.ID)
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Agent received LLM output, executing in sandbox",
+		zap.Int("llm_output_length", len(llmOutput)))
 
 	sandboxResult, err := da.SandboxExecutor.Execute(ctx, da.Task, llmOutput)
 	if err != nil {
@@ -153,18 +160,20 @@ func (da *DynamicAgent) Execute(ctx context.Context) error {
 
 	da.SandboxResult = sandboxResult
 
-	log.Printf("Agent %s sandbox execution completed, starting validation", da.ID)
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Sandbox execution completed, starting validation",
+		zap.Bool("sandbox_success", sandboxResult.Success),
+		zap.Duration("execution_time", sandboxResult.ExecutionTime))
 
 	// Validate the output
 	validationResult, err := da.ValidationEngine.ValidateTaskOutput(ctx, da.Task, llmOutput, sandboxResult)
 	if err != nil {
-		log.Printf("Agent %s validation failed: %v", da.ID, err)
+		logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Warn("Validation failed",
+			zap.Error(err))
 		// Continue execution even if validation fails
-		validationResult = &validation.ValidationResult{
-			TaskID:       da.Task.ID,
+		validationResult = &types.ValidationResult{
 			OverallScore: 50,
 			Passed:       false,
-			Timestamp:    time.Now(),
+			ValidatedAt:  time.Now(),
 		}
 	}
 
@@ -189,11 +198,11 @@ Validation Time: %v
 		sandboxResult.Output,
 		validationResult.OverallScore,
 		map[bool]string{true: "PASSED", false: "FAILED"}[validationResult.Passed],
-		getScoreOrDefault(validationResult.SyntaxResult),
+		0, // syntax score not available
 		getScoreOrDefault(validationResult.SecurityResult),
 		getStringOrDefault(validationResult.SecurityResult),
 		getScoreOrDefault(validationResult.QualityResult),
-		getScoreOrDefault(validationResult.LLMCritiqueResult),
+		0, // critique score not available
 		validationResult.ValidationTime,
 	)
 
@@ -217,7 +226,11 @@ Validation Time: %v
 		},
 	})
 
-	log.Printf("Agent %s completed task %s in %v", da.ID, da.Task.ID, time.Since(da.StartTime))
+	logger.WithComponent("agents").With(zap.String("agent_id", da.ID)).Info("Task completed",
+		zap.String("task_id", da.Task.ID),
+		zap.Duration("total_duration", time.Since(da.StartTime)),
+		zap.Int("validation_score", validationResult.OverallScore),
+		zap.Bool("validation_passed", validationResult.Passed))
 	return nil
 }
 
@@ -491,11 +504,11 @@ func getScoreOrDefault(result interface{}) int {
 		if r != nil {
 			return r.Score
 		}
-	case *validation.TaskSecurityValidationResult:
+	case *types.SecurityResult:
 		if r != nil {
 			return r.Score
 		}
-	case *validation.QualityValidationResult:
+	case *types.QualityResult:
 		if r != nil {
 			return r.Score
 		}
@@ -509,7 +522,7 @@ func getScoreOrDefault(result interface{}) int {
 
 func getStringOrDefault(result interface{}) string {
 	switch r := result.(type) {
-	case *validation.TaskSecurityValidationResult:
+	case *types.SecurityResult:
 		if r != nil {
 			return string(r.RiskLevel)
 		}

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
@@ -12,12 +11,23 @@ import (
 	"time"
 
 	"QLP/internal/config"
+	"QLP/internal/logger"
 	"QLP/internal/orchestrator"
+	"go.uber.org/zap"
 )
 
 func main() {
 	// Load environment variables from .env file
 	config.LoadEnv()
+	
+	// Initialize logger from environment
+	if err := logger.InitFromEnv(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
+		os.Exit(1)
+	}
+	defer logger.Sync()
+	
+	logger.Logger.Info("Starting QuantumLayer Universal Agent Orchestration System")
 	
 	fmt.Println("🚀 QuantumLayer Universal Agent Orchestration System")
 	fmt.Println("============================================")
@@ -42,7 +52,9 @@ func main() {
 		// Use provided intent
 		intentText := strings.Join(os.Args[1:], " ")
 		if err := processSingleIntent(ctx, orch, intentText); err != nil {
-			log.Fatalf("❌ Intent processing failed: %v", err)
+			logger.Logger.Fatal("Intent processing failed",
+				zap.Error(err),
+				zap.String("intent", intentText))
 		}
 		return
 	}
@@ -62,11 +74,13 @@ func main() {
 			switch choice {
 			case "1":
 				if err := runInteractiveMode(ctx, orch); err != nil {
-					log.Fatalf("❌ Interactive mode failed: %v", err)
+					logger.Logger.Fatal("Interactive mode failed",
+						zap.Error(err))
 				}
 			case "2":
 				if err := runProductionDemo(ctx, orch); err != nil {
-					log.Fatalf("❌ Demo failed: %v", err)
+					logger.Logger.Fatal("Demo failed",
+						zap.Error(err))
 				}
 			case "3":
 				fmt.Println("👋 Goodbye!")
@@ -88,13 +102,24 @@ func runProductionDemo(ctx context.Context, o *orchestrator.Orchestrator) error 
 		"Analyze the performance of a Go web application and generate optimization recommendations",
 	}
 
+	logger.WithComponent("demo").Info("Starting production demo",
+		zap.Int("total_demos", len(demoIntents)))
+
 	for i, intentText := range demoIntents {
 		fmt.Printf("🎯 Demo %d/3: %s\n", i+1, intentText)
 		fmt.Println("=" + string(make([]byte, len(intentText)+20)))
 		
 		startTime := time.Now()
 		
+		logger.WithComponent("demo").Info("Starting demo intent",
+			zap.Int("demo_number", i+1),
+			zap.String("intent", intentText))
+		
 		if err := o.ProcessAndExecuteIntent(ctx, intentText); err != nil {
+			logger.WithComponent("demo").Error("Demo intent failed",
+				zap.Int("demo_number", i+1),
+				zap.String("intent", intentText),
+				zap.Error(err))
 			return fmt.Errorf("failed to process intent %d: %w", i+1, err)
 		}
 		
@@ -102,10 +127,14 @@ func runProductionDemo(ctx context.Context, o *orchestrator.Orchestrator) error 
 		fmt.Printf("⏱️  Completed in %v\n", duration)
 		fmt.Println()
 		
+		logger.LogPerformance("demo_intent", duration.Milliseconds(), true)
+		
 		// Brief pause between demos
 		time.Sleep(2 * time.Second)
 	}
 
+	logger.WithComponent("demo").Info("Production demo completed successfully",
+		zap.Int("total_demos", len(demoIntents)))
 	return nil
 }
 
@@ -115,18 +144,31 @@ func processSingleIntent(ctx context.Context, o *orchestrator.Orchestrator, inte
 	
 	startTime := time.Now()
 	
+	logger.WithComponent("main").Info("Processing single intent",
+		zap.String("intent", intentText))
+	
 	if err := o.ProcessAndExecuteIntent(ctx, intentText); err != nil {
+		logger.WithComponent("main").Error("Intent processing failed",
+			zap.String("intent", intentText),
+			zap.Error(err))
 		return fmt.Errorf("failed to process intent: %w", err)
 	}
 	
 	duration := time.Since(startTime)
 	fmt.Printf("⏱️  Completed in %v\n", duration)
 	
+	logger.LogPerformance("single_intent", duration.Milliseconds(), true)
+	logger.WithComponent("main").Info("Intent processing completed",
+		zap.String("intent", intentText),
+		zap.Duration("duration", duration))
+	
 	return nil
 }
 
 func runInteractiveMode(ctx context.Context, o *orchestrator.Orchestrator) error {
 	scanner := bufio.NewScanner(os.Stdin)
+	
+	logger.WithComponent("interactive").Info("Starting interactive mode")
 	
 	for {
 		fmt.Println("\n🎯 Interactive Mode")
@@ -141,17 +183,22 @@ func runInteractiveMode(ctx context.Context, o *orchestrator.Orchestrator) error
 		
 		if intentText == "" {
 			fmt.Println("❌ Please enter a valid intent")
+			logger.WithComponent("interactive").Warn("Empty intent provided")
 			continue
 		}
 		
 		if strings.ToLower(intentText) == "quit" || strings.ToLower(intentText) == "exit" {
 			fmt.Println("👋 Exiting interactive mode...")
+			logger.WithComponent("interactive").Info("User exited interactive mode")
 			break
 		}
 		
 		if err := processSingleIntent(ctx, o, intentText); err != nil {
 			fmt.Printf("❌ Error processing intent: %v\n", err)
 			fmt.Println("💡 Try again with a different intent...")
+			logger.WithComponent("interactive").Error("Interactive intent failed",
+				zap.String("intent", intentText),
+				zap.Error(err))
 			continue
 		}
 		
@@ -159,5 +206,6 @@ func runInteractiveMode(ctx context.Context, o *orchestrator.Orchestrator) error
 		fmt.Println("🔄 Ready for next intent...")
 	}
 	
+	logger.WithComponent("interactive").Info("Interactive mode completed")
 	return nil
 }

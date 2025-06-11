@@ -7,6 +7,7 @@ import (
 
 	"QLP/internal/models"
 	"QLP/internal/sandbox"
+	"QLP/internal/types"
 )
 
 type QualityAnalyzer struct {
@@ -34,16 +35,19 @@ func NewQualityAnalyzer() *QualityAnalyzer {
 	}
 }
 
-func (qa *QualityAnalyzer) AnalyzeOutput(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*QualityValidationResult, error) {
-	result := &QualityValidationResult{
+func (qa *QualityAnalyzer) AnalyzeOutput(ctx context.Context, task models.Task, output string, sandboxResult *sandbox.SandboxExecutionResult) (*types.QualityResult, error) {
+	result := &types.QualityResult{
 		Score:           100,
-		Completeness:    100,
 		Maintainability: 100,
-		Performance:     100,
-		BestPractices:   100,
 		Documentation:   100,
+		BestPractices:   100,
 		TestCoverage:    0.0,
+		Passed:          true,
 	}
+
+	// Local variables for detailed analysis
+	completeness := 100
+	performance := 100
 
 	metrics, exists := qa.metrics[task.Type]
 	if !exists {
@@ -52,13 +56,13 @@ func (qa *QualityAnalyzer) AnalyzeOutput(ctx context.Context, task models.Task, 
 	}
 
 	// Analyze completeness
-	result.Completeness = qa.analyzeCompleteness(output, metrics.CompletenessChecks)
+	completeness = qa.analyzeCompleteness(output, metrics.CompletenessChecks)
 
 	// Analyze maintainability
 	result.Maintainability = qa.analyzeMaintainability(output, metrics.MaintainabilityChecks)
 
 	// Analyze performance
-	result.Performance = qa.analyzePerformance(output, sandboxResult, metrics.PerformanceChecks)
+	performance = qa.analyzePerformance(output, sandboxResult, metrics.PerformanceChecks)
 
 	// Analyze best practices
 	result.BestPractices = qa.analyzeBestPractices(output, metrics.BestPracticesChecks)
@@ -72,7 +76,8 @@ func (qa *QualityAnalyzer) AnalyzeOutput(ctx context.Context, task models.Task, 
 	}
 
 	// Calculate overall score with weights
-	result.Score = qa.calculateOverallQualityScore(result)
+	result.Score = qa.calculateOverallQualityScore(completeness, performance, result)
+	result.Passed = result.Score >= 70
 
 	return result, nil
 }
@@ -162,7 +167,7 @@ func (qa *QualityAnalyzer) calculateTestCoverage(output string) float64 {
 	return coverage
 }
 
-func (qa *QualityAnalyzer) calculateOverallQualityScore(result *QualityValidationResult) int {
+func (qa *QualityAnalyzer) calculateOverallQualityScore(completeness, performance int, result *types.QualityResult) int {
 	weights := map[string]float64{
 		"completeness":    0.25,
 		"maintainability": 0.20,
@@ -171,9 +176,9 @@ func (qa *QualityAnalyzer) calculateOverallQualityScore(result *QualityValidatio
 		"documentation":   0.15,
 	}
 
-	score := float64(result.Completeness)*weights["completeness"] +
+	score := float64(completeness)*weights["completeness"] +
 		float64(result.Maintainability)*weights["maintainability"] +
-		float64(result.Performance)*weights["performance"] +
+		float64(performance)*weights["performance"] +
 		float64(result.BestPractices)*weights["best_practices"] +
 		float64(result.Documentation)*weights["documentation"]
 

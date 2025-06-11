@@ -3,12 +3,13 @@ package agents
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 
 	"QLP/internal/events"
 	"QLP/internal/llm"
+	"QLP/internal/logger"
 	"QLP/internal/models"
+	"go.uber.org/zap"
 )
 
 type AgentFactory struct {
@@ -31,7 +32,9 @@ func NewAgentFactory(llmClient llm.Client, eventBus *events.EventBus) *AgentFact
 }
 
 func (af *AgentFactory) CreateAgent(ctx context.Context, task models.Task, projectContext ProjectContext) (*DynamicAgent, error) {
-	log.Printf("Creating dynamic agent for task: %s (%s)", task.ID, task.Type)
+	logger.WithComponent("agents").Info("Creating dynamic agent",
+		zap.String("task_id", task.ID),
+		zap.String("task_type", string(task.Type)))
 
 	agentContext := af.contextBuilder.BuildAgentContext(task, projectContext, af.agentOutputs)
 
@@ -45,7 +48,9 @@ func (af *AgentFactory) CreateAgent(ctx context.Context, task models.Task, proje
 	af.activeAgents[agent.ID] = agent
 	af.mu.Unlock()
 
-	log.Printf("Created and initialized agent %s for task %s", agent.ID, task.ID)
+	logger.WithComponent("agents").Info("Agent created and initialized",
+		zap.String("agent_id", agent.ID),
+		zap.String("task_id", task.ID))
 	return agent, nil
 }
 
@@ -86,7 +91,8 @@ func (af *AgentFactory) CleanupAgent(agentID string) {
 	defer af.mu.Unlock()
 
 	if agent, exists := af.activeAgents[agentID]; exists {
-		log.Printf("Cleaning up agent %s", agentID)
+		logger.WithComponent("agents").Info("Cleaning up agent",
+			zap.String("agent_id", agentID))
 
 		af.eventBus.Publish(events.Event{
 			ID:     fmt.Sprintf("agent_%s_cleanup", agentID),
