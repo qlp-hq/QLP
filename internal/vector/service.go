@@ -205,7 +205,7 @@ func (vs *VectorService) GetIntentSuggestions(ctx context.Context, userInput str
 // generateSimpleEmbedding creates a basic embedding from text for fallback
 func (vs *VectorService) generateSimpleEmbedding(text string) []float32 {
 	// Simple character-based embedding for development/fallback
-	embedding := make([]float32, 384) // Standard embedding size
+	embedding := make([]float32, 1536) // Match OpenAI text-embedding-ada-002 dimensions
 	
 	// Basic hash-like distribution
 	for i, char := range text {

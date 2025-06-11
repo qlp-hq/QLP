@@ -259,7 +259,7 @@ func (m *MockClient) GenerateEmbedding(_ context.Context, text string) ([]float3
 // generateSimpleEmbedding creates a basic embedding from text for fallback
 func generateSimpleEmbedding(text string) []float32 {
 	// Simple character-based embedding for development/fallback
-	embedding := make([]float32, 384) // Standard embedding size
+	embedding := make([]float32, 1536) // Match OpenAI text-embedding-ada-002 dimensions
 	
 	// Basic hash-like distribution
 	for i, char := range text {
