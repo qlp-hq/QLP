@@ -1,0 +1,39 @@
+title: "QuantumLayer Documentation"
+description: "Enterprise-grade AI agent orchestration with 94/100 confidence validation"
+url: "https://qlp-hq.github.io"
+baseurl: "/QLP"
+
+theme: jekyll-theme-minimal
+
+markdown: kramdown
+highlighter: rouge
+kramdown:
+  input: GFM
+  syntax_highlighter: rouge
+
+plugins:
+  - jekyll-feed
+  - jekyll-sitemap
+  - jekyll-seo-tag
+
+navigation:
+  - title: "Home"
+    url: /
+  - title: "User Guide"
+    url: /user-guide/
+  - title: "API Reference"
+    url: /api/
+  - title: "Architecture"
+    url: /architecture/
+  - title: "Enterprise"
+    url: /enterprise/
+  - title: "Examples"
+    url: /examples/
+  - title: "Deployment"
+    url: /deployment/
+
+footer_links:
+  - title: "GitHub"
+    url: "https://github.com/qlp-hq/QLP"
+  - title: "Enterprise Sales"
+    url: "mailto:enterprise@qlp-hq.com"
