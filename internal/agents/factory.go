@@ -4,30 +4,48 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
+	"QLP/internal/deployment/azure"
 	"QLP/internal/events"
 	"QLP/internal/llm"
 	"QLP/internal/logger"
 	"QLP/internal/models"
+	"QLP/internal/packaging"
+	"QLP/internal/types"
 	"go.uber.org/zap"
 )
 
 type AgentFactory struct {
-	llmClient      llm.Client
-	eventBus       *events.EventBus
-	activeAgents   map[string]*DynamicAgent
-	agentOutputs   map[string]string
-	mu             sync.RWMutex
-	contextBuilder *ContextBuilder
+	llmClient                llm.Client
+	eventBus                 *events.EventBus
+	activeAgents             map[string]*DynamicAgent
+	activeDeploymentAgents   map[string]*DeploymentValidatorAgent
+	agentOutputs             map[string]string
+	mu                       sync.RWMutex
+	contextBuilder           *ContextBuilder
+	deploymentValidationConfig *DeploymentValidatorConfig
 }
 
 func NewAgentFactory(llmClient llm.Client, eventBus *events.EventBus) *AgentFactory {
 	return &AgentFactory{
-		llmClient:      llmClient,
-		eventBus:       eventBus,
-		activeAgents:   make(map[string]*DynamicAgent),
-		agentOutputs:   make(map[string]string),
-		contextBuilder: NewContextBuilder(),
+		llmClient:                llmClient,
+		eventBus:                 eventBus,
+		activeAgents:             make(map[string]*DynamicAgent),
+		activeDeploymentAgents:   make(map[string]*DeploymentValidatorAgent),
+		agentOutputs:             make(map[string]string),
+		contextBuilder:           NewContextBuilder(),
+		deploymentValidationConfig: &DeploymentValidatorConfig{
+			AzureConfig: azure.ClientConfig{
+				SubscriptionID: "", // Will be set from environment
+				Location:       "westeurope",
+			},
+			CostLimitUSD:          10.0,                // $10 limit per deployment
+			TTL:                   15 * time.Minute,    // 15 minute TTL
+			EnableHealthChecks:    true,
+			EnableFunctionalTests: true,
+			CleanupPolicy:         azure.DefaultCleanupPolicy(),
+		},
 	}
 }
 
@@ -106,6 +124,124 @@ func (af *AgentFactory) CleanupAgent(agentID string) {
 		})
 
 		delete(af.activeAgents, agentID)
+	}
+}
+
+// CreateDeploymentValidatorAgent creates a deployment validator agent for Azure validation
+func (af *AgentFactory) CreateDeploymentValidatorAgent(
+	ctx context.Context,
+	agentID string,
+	capsule *packaging.QuantumDrop,
+) (*DeploymentValidatorAgent, error) {
+	logger.WithComponent("agents").Info("Creating deployment validator agent",
+		zap.String("agent_id", agentID),
+		zap.String("capsule_id", capsule.ID))
+
+	agent, err := NewDeploymentValidatorAgent(
+		agentID,
+		af.llmClient,
+		capsule,
+		*af.deploymentValidationConfig,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create deployment validator agent: %w", err)
+	}
+
+	af.mu.Lock()
+	af.activeDeploymentAgents[agentID] = agent
+	af.mu.Unlock()
+
+	logger.WithComponent("agents").Info("Deployment validator agent created",
+		zap.String("agent_id", agentID),
+		zap.String("capsule_id", capsule.ID))
+
+	return agent, nil
+}
+
+// ExecuteDeploymentValidatorAgent executes a deployment validator agent
+func (af *AgentFactory) ExecuteDeploymentValidatorAgent(
+	ctx context.Context,
+	agent *DeploymentValidatorAgent,
+	task models.Task,
+) error {
+	// Convert models.Task to types.Task for compatibility
+	validationTask := af.convertModelTaskToTypesTask(task)
+	
+	_, err := agent.Execute(ctx, validationTask)
+	if err != nil {
+		return fmt.Errorf("deployment validator agent execution failed: %w", err)
+	}
+
+	return nil
+}
+
+// CleanupDeploymentValidatorAgent cleans up a deployment validator agent
+func (af *AgentFactory) CleanupDeploymentValidatorAgent(ctx context.Context, agentID string) error {
+	af.mu.Lock()
+	agent, exists := af.activeDeploymentAgents[agentID]
+	if exists {
+		delete(af.activeDeploymentAgents, agentID)
+	}
+	af.mu.Unlock()
+
+	if !exists {
+		return fmt.Errorf("deployment validator agent %s not found", agentID)
+	}
+
+	logger.WithComponent("agents").Info("Cleaning up deployment validator agent",
+		zap.String("agent_id", agentID))
+
+	// Cleanup Azure resources
+	if err := agent.Cleanup(ctx); err != nil {
+		logger.WithComponent("agents").Error("Failed to cleanup Azure resources",
+			zap.String("agent_id", agentID),
+			zap.Error(err))
+		return err
+	}
+
+	af.eventBus.Publish(events.Event{
+		ID:     fmt.Sprintf("deployment_agent_%s_cleanup", agentID),
+		Type:   events.EventAgentStopped,
+		Source: agentID,
+		Payload: map[string]interface{}{
+			"agent_id":   agentID,
+			"agent_type": "deployment-validator",
+			"status":     agent.GetStatus(),
+		},
+	})
+
+	return nil
+}
+
+// GetActiveDeploymentAgents returns all active deployment validator agents
+func (af *AgentFactory) GetActiveDeploymentAgents() map[string]*DeploymentValidatorAgent {
+	af.mu.RLock()
+	defer af.mu.RUnlock()
+
+	agents := make(map[string]*DeploymentValidatorAgent)
+	for id, agent := range af.activeDeploymentAgents {
+		agents[id] = agent
+	}
+
+	return agents
+}
+
+// SetDeploymentValidationConfig updates the deployment validation configuration
+func (af *AgentFactory) SetDeploymentValidationConfig(config DeploymentValidatorConfig) {
+	af.mu.Lock()
+	defer af.mu.Unlock()
+	af.deploymentValidationConfig = &config
+}
+
+// convertModelTaskToTypesTask converts models.Task to types.Task
+func (af *AgentFactory) convertModelTaskToTypesTask(task models.Task) types.Task {
+	// TODO: Import types package and implement proper conversion
+	// This is a placeholder for now
+	return types.Task{
+		ID:          task.ID,
+		Description: task.Description,
+		Type:        string(task.Type),
+		Status:      "pending",
 	}
 }
 
