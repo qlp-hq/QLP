@@ -17,6 +17,7 @@ import (
 
 type Client interface {
 	Complete(ctx context.Context, prompt string) (string, error)
+	GenerateEmbedding(ctx context.Context, text string) ([]float32, error)
 }
 
 type FallbackClient struct {
@@ -45,6 +46,20 @@ func (f *FallbackClient) Complete(ctx context.Context, prompt string) (string, e
 	}
 
 	return "", fmt.Errorf("all LLM clients failed, last error: %w", lastErr)
+}
+
+func (f *FallbackClient) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	var lastErr error
+
+	for _, client := range f.clients {
+		embedding, err := client.GenerateEmbedding(ctx, text)
+		if err == nil {
+			return embedding, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("all embedding clients failed, last error: %w", lastErr)
 }
 
 type AzureOpenAIClient struct {
@@ -95,6 +110,24 @@ func (a *AzureOpenAIClient) Complete(ctx context.Context, prompt string) (string
 	}
 
 	return resp.Choices[0].Message.Content, nil
+}
+
+func (a *AzureOpenAIClient) GenerateEmbedding(ctx context.Context, text string) ([]float32, error) {
+	req := openai.EmbeddingRequest{
+		Input: []string{text},
+		Model: openai.AdaEmbeddingV2, // text-embedding-ada-002
+	}
+
+	resp, err := a.client.CreateEmbeddings(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("Azure OpenAI embedding failed: %w", err)
+	}
+
+	if len(resp.Data) == 0 {
+		return nil, fmt.Errorf("no embedding data returned")
+	}
+
+	return resp.Data[0].Embedding, nil
 }
 
 type OllamaClient struct {
@@ -174,6 +207,12 @@ func (o *OllamaClient) Complete(ctx context.Context, prompt string) (string, err
 	return strings.TrimSpace(ollamaResp.Response), nil
 }
 
+func (o *OllamaClient) GenerateEmbedding(_ context.Context, text string) ([]float32, error) {
+	// Ollama doesn't support embeddings in the same way, so we'll return a simple fallback
+	// In a real implementation, you'd use a different embedding service or model
+	return generateSimpleEmbedding(text), nil
+}
+
 type MockClient struct{}
 
 func NewMockClient() *MockClient {
@@ -211,6 +250,51 @@ func (m *MockClient) Complete(ctx context.Context, prompt string) (string, error
     "priority": "low"
   }
 ]`, nil
+}
+
+func (m *MockClient) GenerateEmbedding(_ context.Context, text string) ([]float32, error) {
+	return generateSimpleEmbedding(text), nil
+}
+
+// generateSimpleEmbedding creates a basic embedding from text for fallback
+func generateSimpleEmbedding(text string) []float32 {
+	// Simple character-based embedding for development/fallback
+	embedding := make([]float32, 384) // Standard embedding size
+	
+	// Basic hash-like distribution
+	for i, char := range text {
+		if i >= len(embedding) {
+			break
+		}
+		embedding[i%len(embedding)] += float32(char) / 1000.0
+	}
+	
+	// Normalize
+	var norm float32
+	for _, val := range embedding {
+		norm += val * val
+	}
+	if norm > 0 {
+		norm = 1.0 / sqrt(norm)
+		for i := range embedding {
+			embedding[i] *= norm
+		}
+	}
+	
+	return embedding
+}
+
+// Simple square root implementation
+func sqrt(x float32) float32 {
+	if x <= 0 {
+		return 0
+	}
+	
+	guess := x / 2
+	for i := 0; i < 10; i++ { // Newton's method iterations
+		guess = (guess + x/guess) / 2
+	}
+	return guess
 }
 
 func NewLLMClient() Client {

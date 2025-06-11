@@ -14,6 +14,7 @@ import (
 	"QLP/internal/models"
 	"QLP/internal/packaging"
 	"QLP/internal/parser"
+	"QLP/internal/vector"
 )
 
 type Orchestrator struct {
@@ -28,6 +29,8 @@ type Orchestrator struct {
 	hitlEnabled      bool
 	db               *database.Database
 	intentRepo       *database.IntentRepository
+	vectorService    *vector.VectorService
+	llmClient        llm.Client
 }
 
 func New() *Orchestrator {
@@ -47,6 +50,7 @@ func New() *Orchestrator {
 	}
 	
 	intentRepo := database.NewIntentRepository(db)
+	vectorService := vector.NewVectorService(db, llmClient)
 
 	return &Orchestrator{
 		intentParser:     intentParser,
@@ -59,6 +63,8 @@ func New() *Orchestrator {
 		hitlEnabled:      true, // Enable HITL by default
 		db:               db,
 		intentRepo:       intentRepo,
+		vectorService:    vectorService,
+		llmClient:        llmClient,
 	}
 }
 
@@ -144,7 +150,18 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 		return fmt.Errorf("failed to parse intent: %w", err)
 	}
 	
-	// Step 1.1: Persist intent to database
+	// Step 1.1: Check for similar intents first
+	suggestions, err := o.vectorService.GetIntentSuggestions(ctx, intentText)
+	if err != nil {
+		log.Printf("⚠️  Failed to get intent suggestions: %v", err)
+	} else if len(suggestions) > 0 {
+		log.Printf("💡 Found similar intents:")
+		for _, suggestion := range suggestions {
+			log.Printf("   • %s", suggestion)
+		}
+	}
+	
+	// Step 1.2: Persist intent to database
 	intent.Status = models.IntentStatusProcessing
 	intent.UpdatedAt = time.Now()
 	if err := o.intentRepo.Create(intent); err != nil {
@@ -152,6 +169,12 @@ func (o *Orchestrator) ProcessAndExecuteIntent(ctx context.Context, intentText s
 		// Continue execution even if database save fails
 	} else {
 		log.Printf("💾 Intent saved to database: %s", intent.ID)
+	}
+	
+	// Step 1.3: Generate and store intent embedding
+	if err := o.vectorService.StoreIntentEmbedding(ctx, intent.ID, intentText); err != nil {
+		log.Printf("⚠️  Failed to store intent embedding: %v", err)
+		// Continue execution even if embedding storage fails
 	}
 	
 	log.Printf("📋 Parsed %d tasks from intent", len(intent.Tasks))
