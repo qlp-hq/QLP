@@ -7,7 +7,7 @@ CREATE EXTENSION IF NOT EXISTS "vector";
 
 -- Core intent tracking
 CREATE TABLE IF NOT EXISTS intents (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id VARCHAR(50) PRIMARY KEY, -- QLI-timestamp format
     user_input TEXT NOT NULL,
     parsed_tasks JSONB NOT NULL,
     metadata JSONB DEFAULT '{}',
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS intents (
 -- Task management
 CREATE TABLE IF NOT EXISTS tasks (
     id VARCHAR(50) PRIMARY KEY, -- QL-DEV-001 format
-    intent_id UUID REFERENCES intents(id) ON DELETE CASCADE,
+    intent_id VARCHAR(50) REFERENCES intents(id) ON DELETE CASCADE,
     type VARCHAR(50) NOT NULL, -- codegen, test, doc, infra, analyze
     description TEXT NOT NULL,
     dependencies JSONB DEFAULT '[]',
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS security_findings (
 -- HITL decisions
 CREATE TABLE IF NOT EXISTS hitl_decisions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    intent_id UUID REFERENCES intents(id) ON DELETE CASCADE,
+    intent_id VARCHAR(50) REFERENCES intents(id) ON DELETE CASCADE,
     action VARCHAR(50) NOT NULL, -- approve, reject, modify, escalate
     confidence FLOAT NOT NULL,
     auto_approved BOOLEAN DEFAULT false,
@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS hitl_decisions (
 -- QuantumCapsule metadata
 CREATE TABLE IF NOT EXISTS quantum_capsules (
     id VARCHAR(50) PRIMARY KEY, -- QL-CAP-xxx format
-    intent_id UUID REFERENCES intents(id) ON DELETE CASCADE,
+    intent_id VARCHAR(50) REFERENCES intents(id) ON DELETE CASCADE,
     metadata JSONB NOT NULL,
     artifacts JSONB DEFAULT '[]',
     unified_project_path TEXT,
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS quantum_capsules (
 -- Performance metrics
 CREATE TABLE IF NOT EXISTS performance_metrics (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    intent_id UUID REFERENCES intents(id),
+    intent_id VARCHAR(50) REFERENCES intents(id),
     task_id VARCHAR(50) REFERENCES tasks(id),
     agent_id VARCHAR(50) REFERENCES agents(id),
     metric_type VARCHAR(50) NOT NULL, -- execution_time, memory_usage, llm_tokens

@@ -312,8 +312,17 @@ func NewLLMClient() Client {
 		clients = append(clients, azureClient)
 	}
 
-	// Fallback to Ollama
-	ollamaClient := NewOllamaClient("http://192.168.5.240:11434", "llama3")
+	// Fallback to Ollama (if configured)
+	ollamaURL := os.Getenv("OLLAMA_BASE_URL")
+	ollamaModel := os.Getenv("OLLAMA_MODEL")
+	if ollamaURL == "" {
+		ollamaURL = "http://localhost:11434" // Default
+	}
+	if ollamaModel == "" {
+		ollamaModel = "llama3" // Default
+	}
+	
+	ollamaClient := NewOllamaClient(ollamaURL, ollamaModel)
 	clients = append(clients, ollamaClient)
 
 	// Final fallback to mock

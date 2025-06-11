@@ -14,6 +14,8 @@ import (
 	"QLP/internal/models"
 	"QLP/internal/packaging"
 	"QLP/internal/parser"
+	"QLP/internal/types"
+	"QLP/internal/validation"
 	"QLP/internal/vector"
 )
 
@@ -271,7 +273,7 @@ func (o *Orchestrator) collectAgentResults(tasks []models.Task) map[string]*pack
 				Output:           agentResult.Output,
 				ExecutionTime:    agentResult.ExecutionTime,
 				SandboxResult:    agentResult.SandboxResult,
-				ValidationResult: nil, // TODO: Convert validation.ValidationResult to types.ValidationResult
+				ValidationResult: o.convertValidationResult(agentResult.ValidationResult),
 				Error:            agentResult.Error,
 				StartTime:        agentResult.StartTime,
 				EndTime:          agentResult.EndTime,
@@ -296,7 +298,7 @@ func (o *Orchestrator) convertToTaskExecutionResults(tasks []models.Task) []pack
 				AgentID:          agentResult.AgentID,
 				ExecutionTime:    agentResult.ExecutionTime,
 				SandboxResult:    agentResult.SandboxResult,
-				ValidationResult: nil, // TODO: Convert validation.ValidationResult to types.ValidationResult
+				ValidationResult: o.convertValidationResult(agentResult.ValidationResult),
 				Error:            agentResult.Error,
 			}
 			results = append(results, result)
@@ -304,6 +306,32 @@ func (o *Orchestrator) convertToTaskExecutionResults(tasks []models.Task) []pack
 	}
 	
 	return results
+}
+
+// convertValidationResult converts validation.ValidationResult to types.ValidationResult
+func (o *Orchestrator) convertValidationResult(valResult *validation.ValidationResult) *types.ValidationResult {
+	if valResult == nil {
+		return nil
+	}
+	
+	securityScore := 0
+	if valResult.SecurityResult != nil {
+		securityScore = valResult.SecurityResult.Score
+	}
+	
+	qualityScore := 0
+	if valResult.QualityResult != nil {
+		qualityScore = valResult.QualityResult.Score
+	}
+	
+	return &types.ValidationResult{
+		OverallScore:   valResult.OverallScore,
+		SecurityScore:  securityScore,
+		QualityScore:   qualityScore,
+		Passed:         valResult.Passed,
+		ValidationTime: valResult.ValidationTime,
+		ValidatedAt:    valResult.Timestamp,
+	}
 }
 
 // processHITLDecisions handles the human-in-the-loop decision workflow
@@ -444,7 +472,7 @@ func (o *Orchestrator) convertDropsToTaskResults(drops []packaging.QuantumDrop) 
 					AgentID:          agentResult.AgentID,
 					ExecutionTime:    agentResult.ExecutionTime,
 					SandboxResult:    agentResult.SandboxResult,
-					ValidationResult: nil, // TODO: Convert validation.ValidationResult to types.ValidationResult
+					ValidationResult: o.convertValidationResult(agentResult.ValidationResult),
 					Error:            agentResult.Error,
 				}
 				results = append(results, result)

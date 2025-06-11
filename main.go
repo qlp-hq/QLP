@@ -11,10 +11,14 @@ import (
 	"syscall"
 	"time"
 
+	"QLP/internal/config"
 	"QLP/internal/orchestrator"
 )
 
 func main() {
+	// Load environment variables from .env file
+	config.LoadEnv()
+	
 	fmt.Println("🚀 QuantumLayer Universal Agent Orchestration System")
 	fmt.Println("============================================")
 	fmt.Println()
