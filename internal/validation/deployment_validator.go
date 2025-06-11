@@ -13,6 +13,7 @@ import (
 	"QLP/internal/llm"
 	"QLP/internal/logger"
 	"QLP/internal/types"
+	"QLP/internal/validation/core"
 	"go.uber.org/zap"
 )
 
@@ -22,6 +23,7 @@ type DeploymentValidator struct {
 	loadTester        *LoadTester
 	securityTester    *SecurityTester
 	universalValidator *UniversalValidator
+	validationAdapter *core.ValidationAdapter
 	workingDir        string
 }
 
@@ -144,6 +146,7 @@ func NewDeploymentValidator(llmClient llm.Client) *DeploymentValidator {
 		loadTester:         NewLoadTester(10, 60*time.Second, 10*time.Second),
 		securityTester:     NewSecurityTester(),
 		universalValidator: NewUniversalValidator(llmClient),
+		validationAdapter:  core.NewValidationAdapter(llmClient, core.ValidatorTypeDeployment, logger.GetDefaultLogger()),
 		workingDir:         "/tmp/qlp_validation",
 	}
 }

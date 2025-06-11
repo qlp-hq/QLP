@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"QLP/internal/llm"
+	"QLP/internal/llm/parser"
 	"QLP/internal/logger"
 	"QLP/internal/packaging"
 	"QLP/internal/types"
@@ -17,6 +18,7 @@ import (
 // StaticValidator provides comprehensive LLM-based static validation
 type StaticValidator struct {
 	llmClient         llm.Client
+	responseParser    *parser.UnifiedResponseParser
 	codeAnalyzer      *CodeAnalyzer
 	securityScanner   *SecurityScanner
 	qualityChecker    *QualityChecker
@@ -77,6 +79,7 @@ type QualityChecker struct {
 func NewStaticValidator(llmClient llm.Client) *StaticValidator {
 	return &StaticValidator{
 		llmClient:         llmClient,
+		responseParser:    parser.NewUnifiedResponseParser(logger.GetDefaultLogger()),
 		codeAnalyzer:      &CodeAnalyzer{llmClient: llmClient},
 		securityScanner:   NewSecurityScanner(),
 		qualityChecker:    &QualityChecker{llmClient: llmClient},
@@ -234,7 +237,16 @@ RESPOND WITH JSON:
 		return 0, nil, fmt.Errorf("LLM security validation failed: %w", err)
 	}
 
-	// Parse JSON response
+	// Use unified parser with fallback
+	parsedResp, err := sv.responseParser.ParseWithFallback(ctx, response, 
+		parser.ResponseTypeValidation, parser.ResponseTypeJSON, parser.ResponseTypeStructured)
+	if err != nil {
+		logger.WithComponent("validation").Warn("Failed to parse security validation response",
+			zap.Error(err))
+		return sv.fallbackSecurityAnalysis(codeContent), []types.SecurityFinding{}, nil
+	}
+
+	// Extract security data from parsed response
 	var securityResult struct {
 		SecurityScore   int                `json:"security_score"`
 		EnterpriseReady bool               `json:"enterprise_ready"`
@@ -244,10 +256,28 @@ RESPOND WITH JSON:
 		Recommendations []string           `json:"recommendations"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &securityResult); err != nil {
-		logger.WithComponent("validation").Warn("Failed to parse security validation response",
-			zap.Error(err))
-		return sv.fallbackSecurityAnalysis(codeContent), []types.SecurityFinding{}, nil
+	// Convert parsed data to our expected structure
+	if validationResp, ok := parsedResp.Data.(*parser.ValidationResponse); ok {
+		securityResult.SecurityScore = validationResp.SecurityScore
+		securityResult.Confidence = validationResp.Confidence
+		// Convert issues to security findings
+		for _, issue := range validationResp.Issues {
+			finding := types.SecurityFinding{
+				Type:           issue.Type,
+				Severity:       issue.Severity,
+				Description:    issue.Description,
+				Location:       issue.Location,
+				Recommendation: issue.Suggestion,
+			}
+			securityResult.Findings = append(securityResult.Findings, finding)
+		}
+	} else {
+		// Fallback to JSON parsing
+		if err := json.Unmarshal([]byte(response), &securityResult); err != nil {
+			logger.WithComponent("validation").Warn("Fallback JSON parsing failed",
+				zap.Error(err))
+			return sv.fallbackSecurityAnalysis(codeContent), []types.SecurityFinding{}, nil
+		}
 	}
 
 	return securityResult.SecurityScore, securityResult.Findings, nil
@@ -325,7 +355,16 @@ RESPOND WITH JSON:
 		return 0, nil, fmt.Errorf("LLM quality validation failed: %w", err)
 	}
 
-	// Parse JSON response
+	// Use unified parser with fallback
+	parsedResp, err := sv.responseParser.ParseWithFallback(ctx, response, 
+		parser.ResponseTypeValidation, parser.ResponseTypeJSON, parser.ResponseTypeStructured)
+	if err != nil {
+		logger.WithComponent("validation").Warn("Failed to parse quality validation response",
+			zap.Error(err))
+		return sv.fallbackQualityAnalysis(codeContent), []QualityFinding{}, nil
+	}
+
+	// Extract quality data from parsed response
 	var qualityResult struct {
 		QualityScore        int              `json:"quality_score"`
 		ProductionReady     bool             `json:"production_ready"`
@@ -338,10 +377,28 @@ RESPOND WITH JSON:
 		TechnicalDebt       string           `json:"technical_debt"`
 	}
 
-	if err := json.Unmarshal([]byte(response), &qualityResult); err != nil {
-		logger.WithComponent("validation").Warn("Failed to parse quality validation response",
-			zap.Error(err))
-		return sv.fallbackQualityAnalysis(codeContent), []QualityFinding{}, nil
+	// Convert parsed data to our expected structure
+	if validationResp, ok := parsedResp.Data.(*parser.ValidationResponse); ok {
+		qualityResult.QualityScore = validationResp.QualityScore
+		// Convert issues to quality findings
+		for _, issue := range validationResp.Issues {
+			finding := QualityFinding{
+				Type:           issue.Type,
+				Severity:       issue.Severity,
+				Description:    issue.Description,
+				Location:       issue.Location,
+				Recommendation: issue.Suggestion,
+				Category:       "Quality", // Default category
+			}
+			qualityResult.Findings = append(qualityResult.Findings, finding)
+		}
+	} else {
+		// Fallback to JSON parsing
+		if err := json.Unmarshal([]byte(response), &qualityResult); err != nil {
+			logger.WithComponent("validation").Warn("Fallback JSON parsing failed",
+				zap.Error(err))
+			return sv.fallbackQualityAnalysis(codeContent), []QualityFinding{}, nil
+		}
 	}
 
 	return qualityResult.QualityScore, qualityResult.Findings, nil
