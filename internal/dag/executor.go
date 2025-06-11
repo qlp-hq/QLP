@@ -34,6 +34,8 @@ type DAGExecutor struct {
 	mu             sync.RWMutex
 	waitingTasks   chan models.Task
 	projectContext agents.ProjectContext
+	maxConcurrency int
+	semaphore      chan struct{}
 }
 
 func NewDAGExecutor(eventBus *events.EventBus, agentFactory *agents.AgentFactory) *DAGExecutor {
@@ -49,6 +51,8 @@ func NewDAGExecutor(eventBus *events.EventBus, agentFactory *agents.AgentFactory
 		Architecture: "microservices",
 	}
 
+	maxConcurrency := 4 // Limit to 4 concurrent agents
+	
 	return &DAGExecutor{
 		eventBus:       eventBus,
 		agentFactory:   agentFactory,
@@ -56,6 +60,8 @@ func NewDAGExecutor(eventBus *events.EventBus, agentFactory *agents.AgentFactory
 		taskResults:    make(map[string]*TaskResult),
 		waitingTasks:   make(chan models.Task, 100),
 		projectContext: projectContext,
+		maxConcurrency: maxConcurrency,
+		semaphore:      make(chan struct{}, maxConcurrency),
 	}
 }
 
@@ -74,9 +80,23 @@ func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.T
 	executeTasksRecursively = func(tasks []models.Task) {
 		var wg sync.WaitGroup
 		for _, task := range tasks {
+			// Check if task is already being executed or completed
+			de.mu.RLock()
+			status, exists := de.taskStates[task.ID]
+			de.mu.RUnlock()
+			
+			if exists && (status == models.TaskStatusInProgress || status == models.TaskStatusCompleted) {
+				continue // Skip tasks that are already running or completed
+			}
+			
 			wg.Add(1)
 			go func(t models.Task) {
 				defer wg.Done()
+				
+				// Acquire semaphore (limit concurrency)
+				de.semaphore <- struct{}{}
+				defer func() { <-de.semaphore }()
+				
 				if err := de.executeTaskWithDynamicAgent(ctx, t, completedChan); err != nil {
 					log.Printf("Task %s failed: %v", t.ID, err)
 				}
@@ -111,7 +131,12 @@ func (de *DAGExecutor) ExecuteTaskGraph(ctx context.Context, taskGraph *models.T
 func (de *DAGExecutor) executeTaskWithDynamicAgent(ctx context.Context, task models.Task, completedChan chan<- string) error {
 	startTime := time.Now()
 	
+	// Double-check task state to prevent race conditions
 	de.mu.Lock()
+	if status, exists := de.taskStates[task.ID]; exists && (status == models.TaskStatusInProgress || status == models.TaskStatusCompleted) {
+		de.mu.Unlock()
+		return nil // Task already being executed or completed
+	}
 	de.taskStates[task.ID] = models.TaskStatusInProgress
 	de.mu.Unlock()
 
@@ -231,7 +256,7 @@ func (de *DAGExecutor) findReadyTasks(tasks []models.Task) []models.Task {
 	return readyTasks
 }
 
-func (de *DAGExecutor) findNextReadyTasks(completedTaskID string, taskGraph *models.TaskGraph) []models.Task {
+func (de *DAGExecutor) findNextReadyTasks(_ string, taskGraph *models.TaskGraph) []models.Task {
 	var readyTasks []models.Task
 
 	for _, task := range taskGraph.Tasks {
