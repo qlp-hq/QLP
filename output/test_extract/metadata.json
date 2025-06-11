@@ -1,0 +1,27 @@
+{
+  "capsule_id": "QL-CAP-75a24c7c66e04138",
+  "version": "1.0.0",
+  "intent_id": "test-intent-001",
+  "intent_text": "Create a simple Go HTTP server",
+  "created_at": "2025-06-10T22:05:40.767869+01:00",
+  "completed_at": "2025-06-10T22:05:40.767995+01:00",
+  "duration": 125459,
+  "total_tasks": 2,
+  "successful_tasks": 2,
+  "failed_tasks": 0,
+  "overall_score": 0,
+  "tags": [
+    "ql-capsule",
+    "production",
+    "infra",
+    "codegen",
+    "simple"
+  ],
+  "environment": {
+    "go_version": "1.21+",
+    "packaged_at": "2025-06-10T21:05:40.767995Z",
+    "packager": "QuantumLayer Capsule Packager v1.0",
+    "platform": "linux/amd64",
+    "quantum_layer": "v1.0.0"
+  }
+}
