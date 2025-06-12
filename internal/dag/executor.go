@@ -266,6 +266,9 @@ func (de *DAGExecutor) findReadyTasks(tasks []models.Task) []models.Task {
 }
 
 func (de *DAGExecutor) findNextReadyTasks(_ string, taskGraph *models.TaskGraph) []models.Task {
+	de.mu.RLock()
+	defer de.mu.RUnlock()
+	
 	var readyTasks []models.Task
 
 	for _, task := range taskGraph.Tasks {
@@ -273,7 +276,7 @@ func (de *DAGExecutor) findNextReadyTasks(_ string, taskGraph *models.TaskGraph)
 			continue
 		}
 
-		if de.dependenciesCompleted(task.Dependencies) {
+		if de.dependenciesCompletedUnsafe(task.Dependencies) {
 			readyTasks = append(readyTasks, task)
 		}
 	}
@@ -284,7 +287,10 @@ func (de *DAGExecutor) findNextReadyTasks(_ string, taskGraph *models.TaskGraph)
 func (de *DAGExecutor) dependenciesCompleted(dependencies []string) bool {
 	de.mu.RLock()
 	defer de.mu.RUnlock()
+	return de.dependenciesCompletedUnsafe(dependencies)
+}
 
+func (de *DAGExecutor) dependenciesCompletedUnsafe(dependencies []string) bool {
 	for _, depID := range dependencies {
 		if de.taskStates[depID] != models.TaskStatusCompleted {
 			return false
