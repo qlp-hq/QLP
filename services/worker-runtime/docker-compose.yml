@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  worker-runtime:
+    build:
+      context: ../../
+      dockerfile: services/worker-runtime/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - QLP_LOG_LEVEL=info
+      - QLP_LOG_FORMAT=console
+      # Azure OpenAI (optional - will fallback to Ollama then Mock)
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      # Ollama fallback (optional)
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=llama3
+    volumes:
+      # Mount Docker socket for container management
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Work directory for sandbox operations
+      - worker_data:/tmp/qlp-sandbox
+    privileged: true # Required for Docker-in-Docker
+    networks:
+      - qlp-network
+
+volumes:
+  worker_data:
+
+networks:
+  qlp-network:
+    driver: bridge

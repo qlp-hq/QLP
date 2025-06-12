@@ -77,3 +77,13 @@ type Edge struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 }
+
+// IntentUpdate represents the fields that can be updated in an intent
+type IntentUpdate struct {
+	Status          *IntentStatus     `json:"status,omitempty"`
+	Tasks           []Task            `json:"tasks,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	OverallScore    *int              `json:"overall_score,omitempty"`
+	ExecutionTimeMS *int              `json:"execution_time_ms,omitempty"`
+	CompletedAt     *time.Time        `json:"completed_at,omitempty"`
+}

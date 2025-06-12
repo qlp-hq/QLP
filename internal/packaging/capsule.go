@@ -32,6 +32,7 @@ type QLCapsule struct {
 	Artifacts     []ArtifactReference  `json:"artifacts"`
 	Manifest      CapsuleManifest      `json:"manifest"`
 	UnifiedProject *UnifiedProject     `json:"unified_project,omitempty"`
+	ValidationReport *DeploymentValidationReport `json:"validation_report,omitempty"`
 }
 
 type CapsuleMetadata struct {
@@ -46,6 +47,7 @@ type CapsuleMetadata struct {
 	SuccessfulTasks int                    `json:"successful_tasks"`
 	FailedTasks     int                    `json:"failed_tasks"`
 	OverallScore    int                    `json:"overall_score"`
+	QualityScore    int                    `json:"quality_score"`
 	Tags            []string               `json:"tags"`
 	Environment     map[string]interface{} `json:"environment"`
 }
@@ -185,6 +187,25 @@ type DocumentationManifest struct {
 	Architecture string   `json:"architecture"`
 }
 
+// DeploymentValidationReport contains real Azure deployment validation results
+type DeploymentValidationReport struct {
+	CapsuleID           string    `json:"capsule_id"`
+	ResourceGroup       string    `json:"resource_group"`
+	DeploymentSuccess   bool      `json:"deployment_success"`
+	Status              string    `json:"status"`
+	StartTime           time.Time `json:"start_time"`
+	EndTime             time.Time `json:"end_time"`
+	Duration            time.Duration `json:"duration"`
+	CostEstimateUSD     float64   `json:"cost_estimate_usd"`
+	HealthChecksPassed  int       `json:"health_checks_passed"`
+	TotalHealthChecks   int       `json:"total_health_checks"`
+	TestsPassed         int       `json:"tests_passed"`
+	TotalTests          int       `json:"total_tests"`
+	AzureLocation       string    `json:"azure_location"`
+	ValidationDetails   map[string]interface{} `json:"validation_details"`
+	ErrorMessage        string    `json:"error_message,omitempty"`
+}
+
 func NewCapsulePackager(outputDir string) *CapsulePackager {
 	return &CapsulePackager{
 		outputDir:     outputDir,
@@ -205,13 +226,16 @@ func (cp *CapsulePackager) PackageCapsule(ctx context.Context, intent models.Int
 		unifiedProject = nil
 	}
 	
+	// Build quality report first so we can use its score in metadata
+	qualityReport := cp.buildQualityReport(taskResults)
+	
 	capsule := &QLCapsule{
-		Metadata: cp.buildMetadata(intent, taskResults, capsuleID),
+		Metadata: cp.buildMetadata(intent, taskResults, capsuleID, qualityReport.OverallQualityScore),
 		Tasks:    cp.buildTaskArtifacts(taskResults),
 		ValidationResults: cp.extractValidationResults(taskResults),
 		ExecutionSummary: cp.buildExecutionSummary(taskResults),
 		SecurityReport: cp.buildSecurityReport(taskResults),
-		QualityReport: cp.buildQualityReport(taskResults),
+		QualityReport: qualityReport,
 		Artifacts: cp.collectArtifacts(taskResults),
 		Manifest: cp.buildManifest(),
 		UnifiedProject: unifiedProject,
@@ -348,7 +372,7 @@ func (cp *CapsulePackager) exportAsTarGz(capsule *QLCapsule) ([]byte, error) {
 	return cp.exportAsZip(capsule)
 }
 
-func (cp *CapsulePackager) buildMetadata(intent models.Intent, results []TaskExecutionResult, capsuleID string) CapsuleMetadata {
+func (cp *CapsulePackager) buildMetadata(intent models.Intent, results []TaskExecutionResult, capsuleID string, qualityScore int) CapsuleMetadata {
 	successfulTasks := 0
 	failedTasks := 0
 	totalScore := 0
@@ -384,6 +408,7 @@ func (cp *CapsulePackager) buildMetadata(intent models.Intent, results []TaskExe
 		SuccessfulTasks: successfulTasks,
 		FailedTasks:     failedTasks,
 		OverallScore:    overallScore,
+		QualityScore:    qualityScore,
 		Tags:            cp.generateTags(intent, results),
 		Environment:     cp.captureEnvironment(),
 	}

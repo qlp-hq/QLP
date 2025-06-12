@@ -11,12 +11,31 @@ import (
 	"go.uber.org/zap"
 )
 
+// ImplementationMode controls whether to use real or mock Azure implementations
+type ImplementationMode string
+
+const (
+	ModeMock ImplementationMode = "mock"
+	ModeReal ImplementationMode = "real"
+)
+
+// SetImplementationMode sets the global implementation mode
+var currentImplementationMode = ModeMock
+
+func SetImplementationMode(mode ImplementationMode) {
+	currentImplementationMode = mode
+}
+
+func GetImplementationMode() ImplementationMode {
+	return currentImplementationMode
+}
+
 // AzureClient provides unified access to Azure services for deployment validation
 type AzureClient struct {
 	logger           logger.Interface
 	subscriptionID   string
 	credential       *azidentity.DefaultAzureCredential
-	resourcesClient  *armresources.Client
+	resourcesClient  *armresources.ResourceGroupsClient
 	location         string
 	tenantID         string
 }
@@ -45,7 +64,7 @@ func NewAzureClient(config ClientConfig) (*AzureClient, error) {
 	}
 	
 	// Create ARM resources client
-	resourcesClient, err := armresources.NewClient(config.SubscriptionID, credential, nil)
+	resourcesClient, err := armresources.NewResourceGroupsClient(config.SubscriptionID, credential, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ARM resources client: %w", err)
 	}
@@ -98,15 +117,21 @@ func (ac *AzureClient) CreateResourceGroup(ctx context.Context, spec ResourceGro
 		Tags:     spec.Tags,
 	}
 	
-	// For now, stub the creation - actual implementation will depend on final Azure SDK API
-	ac.logger.Info("Resource group creation stubbed - would create:",
-		zap.String("name", spec.Name),
-		zap.String("location", spec.Location),
-		zap.Any("tags", spec.Tags),
-	)
-	
-	// TODO: Replace with actual Azure SDK call once API is verified
-	_ = rgParams
+	// Check if we should use real or mock implementation
+	if GetImplementationMode() == ModeReal {
+		// Execute the real Azure SDK call
+		_, err := ac.resourcesClient.CreateOrUpdate(ctx, spec.Name, rgParams, nil)
+		if err != nil {
+			return fmt.Errorf("failed to create Azure resource group %s: %w", spec.Name, err)
+		}
+	} else {
+		// Mock implementation
+		ac.logger.Info("MOCK: Resource group creation simulated",
+			zap.String("name", spec.Name),
+			zap.String("location", spec.Location),
+			zap.Any("tags", spec.Tags),
+		)
+	}
 	
 	ac.logger.Info("Resource group created successfully",
 		zap.String("name", spec.Name),
@@ -122,13 +147,28 @@ func (ac *AzureClient) DeleteResourceGroup(ctx context.Context, name string) err
 		zap.String("name", name),
 	)
 	
-	// For now, stub the deletion - actual implementation will depend on final Azure SDK API
-	ac.logger.Info("Resource group deletion stubbed - would delete:",
-		zap.String("name", name),
-	)
-	
-	// TODO: Replace with actual Azure SDK call once API is verified
-	// Example: poller, err := ac.resourcesClient.BeginDelete(ctx, name, &armresources.ResourceGroupsClientBeginDeleteOptions{})
+	// Check if we should use real or mock implementation
+	if GetImplementationMode() == ModeReal {
+		// Execute the real Azure SDK call
+		poller, err := ac.resourcesClient.BeginDelete(ctx, name, nil)
+		if err != nil {
+			return fmt.Errorf("failed to start deletion of resource group %s: %w", name, err)
+		}
+		
+		// Wait for completion with timeout
+		timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		defer cancel()
+		
+		_, err = poller.PollUntilDone(timeoutCtx, nil)
+		if err != nil {
+			return fmt.Errorf("failed to complete deletion of resource group %s: %w", name, err)
+		}
+	} else {
+		// Mock implementation
+		ac.logger.Info("MOCK: Resource group deletion simulated",
+			zap.String("name", name),
+		)
+	}
 	
 	ac.logger.Info("Resource group deleted successfully",
 		zap.String("name", name),
@@ -158,15 +198,32 @@ func (ac *AzureClient) ListResourceGroups(ctx context.Context) ([]*armresources.
 
 // CheckResourceGroupExists verifies if a resource group exists
 func (ac *AzureClient) CheckResourceGroupExists(ctx context.Context, name string) (bool, error) {
-	// For now, stub the existence check - actual implementation will depend on final Azure SDK API
-	ac.logger.Debug("Resource group existence check stubbed",
+	ac.logger.Debug("Checking resource group existence",
 		zap.String("name", name),
 	)
 	
-	// TODO: Replace with actual Azure SDK call once API is verified
-	// Example: resp, err := ac.resourcesClient.CheckExistence(ctx, name, &armresources.ResourceGroupsClientCheckExistenceOptions{})
-	
-	return false, nil // Stub: assume doesn't exist
+	// Check if we should use real or mock implementation
+	if GetImplementationMode() == ModeReal {
+		// Execute the real Azure SDK call
+		resp, err := ac.resourcesClient.CheckExistence(ctx, name, nil)
+		if err != nil {
+			return false, fmt.Errorf("failed to check existence of resource group %s: %w", name, err)
+		}
+		
+		exists := resp.Success
+		ac.logger.Debug("Resource group existence verified",
+			zap.String("name", name),
+			zap.Bool("exists", exists),
+		)
+		
+		return exists, nil
+	} else {
+		// Mock implementation
+		ac.logger.Debug("MOCK: Resource group existence check simulated",
+			zap.String("name", name),
+		)
+		return true, nil // Mock: assume exists
+	}
 }
 
 // GetSubscriptionID returns the configured subscription ID

@@ -1,0 +1,236 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"go.uber.org/zap"
+
+	"QLP/api-gateway/pkg/config"
+	"QLP/api-gateway/internal/handlers"
+	gwmiddleware "QLP/api-gateway/internal/middleware"
+	"QLP/internal/logger"
+)
+
+func main() {
+	// Initialize logger
+	if err := logger.InitFromEnv(); err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer logger.Sync()
+
+	logger.WithComponent("api-gateway").Info("Starting QLP API Gateway")
+
+	// Load configuration
+	gatewayConfig := config.LoadGatewayConfig()
+	if err := gatewayConfig.Validate(); err != nil {
+		logger.WithComponent("api-gateway").Fatal("Invalid configuration", zap.Error(err))
+	}
+
+	logger.WithComponent("api-gateway").Info("Configuration loaded",
+		zap.String("environment", gatewayConfig.Environment),
+		zap.String("port", gatewayConfig.Port),
+		zap.Int("services", len(gatewayConfig.Services)))
+
+	// Initialize handlers
+	proxyHandler := handlers.NewProxyHandler(gatewayConfig)
+	gatewayHandler := handlers.NewGatewayHandler(gatewayConfig, proxyHandler)
+
+	// Initialize middleware
+	authMiddleware := gwmiddleware.NewAuthMiddleware(&gatewayConfig.Auth)
+	rateLimitMiddleware := gwmiddleware.NewRateLimitMiddleware(&gatewayConfig.RateLimit)
+	circuitBreakerMiddleware := gwmiddleware.NewCircuitBreakerMiddleware(&gatewayConfig.CircuitBreaker)
+
+	// Start middleware cleanup routines
+	rateLimitMiddleware.Cleanup()
+	circuitBreakerMiddleware.Cleanup()
+
+	// Setup router
+	router := chi.NewRouter()
+
+	// Core middleware
+	router.Use(middleware.Logger)
+	router.Use(middleware.Recoverer)
+	router.Use(middleware.RequestID)
+	router.Use(middleware.RealIP)
+	router.Use(middleware.Timeout(gatewayConfig.Timeouts.Request))
+
+	// CORS middleware
+	if gatewayConfig.EnableCORS {
+		corsConfig := gwmiddleware.DefaultCORSConfig()
+		router.Use(gwmiddleware.CORS(corsConfig))
+	}
+
+	// Rate limiting middleware
+	if gatewayConfig.EnableRateLimit {
+		router.Use(rateLimitMiddleware.Limit)
+	}
+
+	// Authentication middleware for protected routes
+	var authHandler func(http.Handler) http.Handler
+	if gatewayConfig.EnableAuth {
+		authHandler = authMiddleware.Authenticate
+	}
+
+	// Gateway management endpoints (no auth required)
+	router.Get("/health", gatewayHandler.HealthCheck)
+	router.Get("/metrics", gatewayHandler.GetMetrics)
+	
+	// API routes
+	router.Route("/api/v1", func(r chi.Router) {
+		// Gateway status endpoints
+		r.Get("/status", gatewayHandler.GetStatus)
+		r.Get("/services", gatewayHandler.GetServices)
+		r.Get("/config", gatewayHandler.GetConfiguration)
+
+		// Protected service routes
+		r.Group(func(r chi.Router) {
+			// Apply authentication if enabled
+			if authHandler != nil {
+				r.Use(authHandler)
+			}
+
+			// Apply circuit breaker protection for each service
+			if gatewayConfig.CircuitBreaker.Enabled {
+				// Data Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("data"))
+					r.Route("/tenants/{tenantId}/intents", func(r chi.Router) {
+						r.Mount("/", proxyHandler.ProxyRequest("data"))
+					})
+				})
+
+				// Worker Runtime Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("worker"))
+					r.Route("/tenants/{tenantId}/runtime", func(r chi.Router) {
+						r.Mount("/", proxyHandler.ProxyRequest("worker"))
+					})
+				})
+
+				// Packaging Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("packaging"))
+					r.Route("/tenants/{tenantId}/capsules", func(r chi.Router) {
+						r.Mount("/", proxyHandler.ProxyRequest("packaging"))
+					})
+					r.Route("/tenants/{tenantId}/quantum-drops", func(r chi.Router) {
+						r.Mount("/", proxyHandler.ProxyRequest("packaging"))
+					})
+				})
+
+				// Orchestrator Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("orchestrator"))
+					r.Route("/tenants/{tenantId}/workflows", func(r chi.Router) {
+						r.Mount("/", proxyHandler.ProxyRequest("orchestrator"))
+					})
+					r.Route("/dag", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("orchestrator"))
+					})
+				})
+
+				// LLM Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("llm"))
+					r.Route("/tenants/{tenantId}/completion", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("llm"))
+					})
+					r.Route("/tenants/{tenantId}/embedding", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("llm"))
+					})
+					r.Route("/tenants/{tenantId}/chat", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("llm"))
+					})
+					r.Route("/providers", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("llm"))
+					})
+				})
+
+				// Agent Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("agent"))
+					r.Route("/tenants/{tenantId}/agents", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("agent"))
+					})
+				})
+
+				// Validation Service
+				r.Group(func(r chi.Router) {
+					r.Use(circuitBreakerMiddleware.Protect("validation"))
+					r.Route("/tenants/{tenantId}/validate", func(r chi.Router) {
+						r.Mount("/*", proxyHandler.ProxyRequest("validation"))
+					})
+				})
+			} else {
+				// Setup routes without circuit breaker protection
+				proxyHandler.SetupRoutes(r)
+			}
+		})
+	})
+
+	// Handle 404 and 405 errors
+	router.NotFound(gatewayHandler.NotFound)
+	router.MethodNotAllowed(gatewayHandler.MethodNotAllowed)
+
+	// Create HTTP server
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%s", gatewayConfig.Port),
+		Handler:      router,
+		ReadTimeout:  gatewayConfig.Timeouts.Read,
+		WriteTimeout: gatewayConfig.Timeouts.Write,
+		IdleTimeout:  gatewayConfig.Timeouts.Idle,
+	}
+
+	// Start server in goroutine
+	go func() {
+		logger.WithComponent("api-gateway").Info("Server starting",
+			zap.String("port", gatewayConfig.Port),
+			zap.String("environment", gatewayConfig.Environment),
+			zap.Bool("auth_enabled", gatewayConfig.EnableAuth),
+			zap.Bool("rate_limit_enabled", gatewayConfig.EnableRateLimit),
+			zap.Bool("circuit_breaker_enabled", gatewayConfig.CircuitBreaker.Enabled),
+			zap.Bool("cors_enabled", gatewayConfig.EnableCORS))
+
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.WithComponent("api-gateway").Fatal("Failed to start server", zap.Error(err))
+		}
+	}()
+
+	// Log service configuration
+	for name, service := range gatewayConfig.Services {
+		logger.WithComponent("api-gateway").Info("Service configured",
+			zap.String("name", name),
+			zap.String("base_url", service.BaseURL),
+			zap.Duration("timeout", service.Timeout),
+			zap.Int("max_retries", service.MaxRetries),
+			zap.Bool("circuit_breaker", service.CircuitBreaker),
+			zap.Int("routes", len(service.Routes)))
+	}
+
+	// Wait for interrupt signal for graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	<-c
+
+	// Graceful shutdown
+	logger.WithComponent("api-gateway").Info("Shutting down server...")
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		logger.WithComponent("api-gateway").Error("Server shutdown failed", zap.Error(err))
+	}
+
+	logger.WithComponent("api-gateway").Info("Server stopped")
+}

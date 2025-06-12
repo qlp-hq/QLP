@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  data-service:
+    build:
+      context: ../../
+      dockerfile: services/data-service/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://qlp_user:qlp_password@postgres:5432/qlp_db?sslmode=disable
+      - QLP_LOG_LEVEL=info
+      - QLP_LOG_FORMAT=console
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - qlp-network
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    environment:
+      - POSTGRES_DB=qlp_db
+      - POSTGRES_USER=qlp_user
+      - POSTGRES_PASSWORD=qlp_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qlp_user -d qlp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - qlp-network
+
+volumes:
+  postgres_data:
+
+networks:
+  qlp-network:
+    driver: bridge
