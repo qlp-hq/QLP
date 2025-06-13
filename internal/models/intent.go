@@ -8,6 +8,7 @@ type Intent struct {
 	ID              string            `json:"id"`
 	UserInput       string            `json:"user_input"`
 	Tasks           []Task            `json:"tasks"` // Renamed from ParsedTasks
+	Language        string            `json:"language"`
 	Metadata        map[string]string `json:"metadata"`
 	Status          IntentStatus      `json:"status"`
 	OverallScore    int               `json:"overall_score"`
@@ -28,8 +29,12 @@ const (
 
 type Task struct {
 	ID           string            `json:"id"`
+	IntentID     string            `json:"intent_id"`
 	Type         TaskType          `json:"type"`
 	Description  string            `json:"description"`
+	Language     string            `json:"language"`
+	Model        string            `json:"model,omitempty"`
+	Ensemble     bool              `json:"ensemble,omitempty"`
 	Dependencies []string          `json:"dependencies"`
 	Priority     Priority          `json:"priority"`
 	Metadata     map[string]string `json:"metadata"`

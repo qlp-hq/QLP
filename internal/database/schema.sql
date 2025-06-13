@@ -132,6 +132,18 @@ CREATE TABLE IF NOT EXISTS events (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Prompt Registry
+CREATE TABLE IF NOT EXISTS prompt_registry (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name VARCHAR(255) UNIQUE NOT NULL,
+    task_type VARCHAR(50) NOT NULL,
+    prompt_text TEXT NOT NULL,
+    version INTEGER DEFAULT 1,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for performance
 CREATE INDEX IF NOT EXISTS idx_intents_status ON intents(status);
 CREATE INDEX IF NOT EXISTS idx_intents_created_at ON intents(created_at);
@@ -145,6 +157,8 @@ CREATE INDEX IF NOT EXISTS idx_quantum_capsules_intent_id ON quantum_capsules(in
 CREATE INDEX IF NOT EXISTS idx_performance_metrics_timestamp ON performance_metrics(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_prompt_registry_task_type ON prompt_registry(task_type);
+CREATE INDEX IF NOT EXISTS idx_prompt_registry_is_active ON prompt_registry(is_active);
 
 -- Vector similarity search index (for intent embeddings)
 CREATE INDEX IF NOT EXISTS idx_intents_embedding ON intents USING ivfflat (embedding vector_cosine_ops);
@@ -160,4 +174,8 @@ $$ language 'plpgsql';
 
 CREATE TRIGGER update_intents_updated_at 
     BEFORE UPDATE ON intents 
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_prompt_registry_updated_at
+    BEFORE UPDATE ON prompt_registry
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

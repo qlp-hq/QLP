@@ -22,27 +22,27 @@ func LoadEnv() {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		
+
 		// Skip empty lines and comments
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		// Parse key=value
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) != 2 {
 			continue
 		}
-		
+
 		key := strings.TrimSpace(parts[0])
 		value := strings.TrimSpace(parts[1])
-		
+
 		// Only set if not already set by system environment
 		if os.Getenv(key) == "" {
 			os.Setenv(key, value)
 		}
 	}
-	
+
 	if err := scanner.Err(); err != nil {
 		fmt.Printf("⚠️  Error reading .env file: %v\\n", err)
 	}
@@ -54,4 +54,13 @@ func GetEnvOrDefault(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// GetKafkaBrokers returns a slice of Kafka brokers from the environment variable.
+func GetKafkaBrokers() []string {
+	brokersStr := os.Getenv("KAFKA_BROKERS")
+	if brokersStr == "" {
+		return []string{}
+	}
+	return strings.Split(brokersStr, ",")
 }

@@ -1,0 +1,157 @@
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres
+    environment:
+      POSTGRES_USER: qlp_user
+      POSTGRES_PASSWORD: qlp_password
+      POSTGRES_DB: qlp_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./internal/database/schema.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data:/var/lib/postgresql/data
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  intent-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/intent-service/cmd/intent-service
+    container_name: intent-service
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - PORT=8080
+    depends_on:
+      - kafka
+
+  orchestrator-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/orchestrator-service/cmd/orchestrator-service
+    container_name: orchestrator-service
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - REDIS_ADDR=redis:6379
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - SERVICE_NAME=orchestrator-service
+    depends_on:
+      - kafka
+      - redis
+
+  agent-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/agent-worker
+    container_name: agent-worker
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - SERVICE_NAME=agent-worker
+    depends_on:
+      - kafka
+    # Use 'deploy' for swarm mode to scale, or just run multiple containers
+    # deploy:
+    #   replicas: 3
+
+  validation-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/validation-service/cmd/validation-service
+    container_name: validation-service
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - SERVICE_NAME=validation-service
+    depends_on:
+      - kafka
+
+  persistence-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/persistence-service/cmd/persistence-service
+    container_name: persistence-service
+    volumes:
+      - ./output:/app/output
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - LOCAL_STORAGE_PATH=/app/output
+      - SERVICE_NAME=persistence-service
+    depends_on:
+      - kafka
+
+  prompt-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE_PATH: services/prompt-service/cmd/prompt-service
+    container_name: prompt-service
+    ports:
+      - "8081:8081"
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - PROMPT_SERVICE_PORT=8081
+      - DATABASE_URL=postgres://qlp_user:qlp_password@postgres:5432/qlp_db?sslmode=disable
+    depends_on:
+      - kafka
+      - postgres
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    driver: bridge 

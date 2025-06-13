@@ -68,19 +68,18 @@ type AzureOpenAIClient struct {
 	endpoint string
 }
 
-func NewAzureOpenAIClient(apiKey, endpoint, model string) *AzureOpenAIClient {
+func NewAzureOpenAIClient(apiKey, endpoint string) (*AzureOpenAIClient, error) {
+	if apiKey == "" || endpoint == "" {
+		return nil, fmt.Errorf("Azure OpenAI API key and endpoint cannot be empty")
+	}
 	config := openai.DefaultAzureConfig(apiKey, endpoint)
 	client := openai.NewClientWithConfig(config)
 
-	if model == "" {
-		model = "gpt-4"
-	}
-
 	return &AzureOpenAIClient{
 		client:   client,
-		model:    model,
+		model:    "gpt-4", // Default model
 		endpoint: endpoint,
-	}
+	}, nil
 }
 
 func (a *AzureOpenAIClient) Complete(ctx context.Context, prompt string) (string, error) {
@@ -260,7 +259,7 @@ func (m *MockClient) GenerateEmbedding(_ context.Context, text string) ([]float3
 func generateSimpleEmbedding(text string) []float32 {
 	// Simple character-based embedding for development/fallback
 	embedding := make([]float32, 1536) // Match OpenAI text-embedding-ada-002 dimensions
-	
+
 	// Basic hash-like distribution
 	for i, char := range text {
 		if i >= len(embedding) {
@@ -268,7 +267,7 @@ func generateSimpleEmbedding(text string) []float32 {
 		}
 		embedding[i%len(embedding)] += float32(char) / 1000.0
 	}
-	
+
 	// Normalize
 	var norm float32
 	for _, val := range embedding {
@@ -280,7 +279,7 @@ func generateSimpleEmbedding(text string) []float32 {
 			embedding[i] *= norm
 		}
 	}
-	
+
 	return embedding
 }
 
@@ -289,7 +288,7 @@ func sqrt(x float32) float32 {
 	if x <= 0 {
 		return 0
 	}
-	
+
 	guess := x / 2
 	for i := 0; i < 10; i++ { // Newton's method iterations
 		guess = (guess + x/guess) / 2
@@ -297,37 +296,51 @@ func sqrt(x float32) float32 {
 	return guess
 }
 
-func NewLLMClient() Client {
+func NewLLMClient() (Client, error) {
+	// --- Order of preference for LLM providers ---
+	// 1. Azure OpenAI
+	// 2. Anthropic
+	// 3. Groq
+
 	var clients []Client
 
-	// Try Azure OpenAI first (requires environment variables)
+	// Azure OpenAI
 	azureAPIKey := os.Getenv("AZURE_OPENAI_API_KEY")
 	azureEndpoint := os.Getenv("AZURE_OPENAI_ENDPOINT")
 	if azureAPIKey != "" && azureEndpoint != "" {
-		azureClient := NewAzureOpenAIClient(
-			azureAPIKey,
-			azureEndpoint,
-			"gpt-4",
-		)
-		clients = append(clients, azureClient)
+		azureClient, err := NewAzureOpenAIClient(azureAPIKey, azureEndpoint)
+		if err != nil {
+			log.Printf("WARN: Failed to create Azure OpenAI client: %v", err)
+		} else {
+			clients = append(clients, azureClient)
+		}
 	}
 
-	// Fallback to Ollama (if configured)
-	ollamaURL := os.Getenv("OLLAMA_BASE_URL")
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
-	if ollamaURL == "" {
-		ollamaURL = "http://localhost:11434" // Default
+	// Anthropic
+	anthropicAPIKey := os.Getenv("ANTHROPIC_API_KEY")
+	if anthropicAPIKey != "" {
+		anthropicClient, err := NewAnthropicClient(anthropicAPIKey)
+		if err != nil {
+			log.Printf("WARN: Failed to create Anthropic client: %v", err)
+		} else {
+			clients = append(clients, anthropicClient)
+		}
 	}
-	if ollamaModel == "" {
-		ollamaModel = "llama3" // Default
+
+	// Groq
+	groqAPIKey := os.Getenv("GROQ_API_KEY")
+	if groqAPIKey != "" {
+		groqClient, err := NewGroqClient(groqAPIKey)
+		if err != nil {
+			log.Printf("WARN: Failed to create Groq client: %v", err)
+		} else {
+			clients = append(clients, groqClient)
+		}
 	}
-	
-	ollamaClient := NewOllamaClient(ollamaURL, ollamaModel)
-	clients = append(clients, ollamaClient)
 
-	// Final fallback to mock
-	mockClient := NewMockClient()
-	clients = append(clients, mockClient)
+	if len(clients) == 0 {
+		return nil, fmt.Errorf("no LLM clients could be initialized. Please check your API keys")
+	}
 
-	return NewFallbackClient(clients...)
+	return NewFallbackClient(clients...), nil
 }
